@@ -1,0 +1,65 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: oer
+      POSTGRES_PASSWORD: oer
+      POSTGRES_DB: oer_social
+    ports:
+      - "5434:5432"
+    volumes:
+      - oer_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oer -d oer_social"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://oer:oer@db:5432/oer_social
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      MEDIA_DIR: /app/media
+    volumes:
+      - ./backend/app:/app/app
+      - oer_media:/app/media
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_MEDIA_URL: ""
+        BACKEND_URL: http://api:8000
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: /api
+      NEXT_PUBLIC_MEDIA_URL: ""
+      BACKEND_URL: http://api:8000
+    depends_on:
+      - api
+
+  # Cloudflare Tunnel — token from backend/.env (also loaded via project .env for Compose)
+  # In Zero Trust → Public Hostname, set Service URL to: http://web:3000
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+    depends_on:
+      - web
+
+volumes:
+  oer_pg:
+  oer_media:

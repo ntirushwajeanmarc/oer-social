@@ -1,0 +1,23 @@
+My past prompt: 
+
+To Make Prompt for  creation of Open Education Resources (OER) Following below guidance : 
+- What is the topic/program?
+Education in Anesthesia , perioperative Medicineand Critical Care 
+
+- Who are the stakeholders/leamers?
+Anesthesia practitionners, Perioperative Health professionals (Surgeons, physician, nurses, clinical officers, students, …) and other éducators 
+
+- Why would OER be appropriate here?: education and coaching needs to be spread freely for different cadres, traners, trainees on different training sites also for open reflection and discussions
+
+- What OER tools would you use?
+Why?
+Social médias (Wattsap status, twiter, X,…) posters and vidéos
+Zoom (Webinar) présentation p
+YouTube - to demonstrate training techniques.
+Bricks - to allow for customization at different health centers.)
+
+- What are the program/learning objectives?
+To remember understanding basics of resuscitation principales (OSCE Curriculum), to appropriately apply safe anesthesia, perioperative Medicien and post op principles, Postoperative Pain Prévention and Management
+
+- What Al tools would you use?
+ChatGPT, Claude, Google Notebook LM,  podcast.

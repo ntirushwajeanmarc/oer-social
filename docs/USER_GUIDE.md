@@ -1,0 +1,95 @@
+# OER Social — User Guide
+
+## Run
+
+```bash
+cd oer-social
+cp backend/.env.example backend/.env
+# Set secrets in .env (API key, JWT, admin email/password)
+docker compose up --build
+```
+
+Open http://localhost:3000
+
+## Public access (Cloudflare Tunnel)
+
+To share the app over HTTPS (learners, Instagram `PUBLIC_BASE_URL`), see **[docs/CLOUDFLARE_TUNNEL.md](CLOUDFLARE_TUNNEL.md)**.
+
+**Local URL to put in Cloudflare** (Public Hostname → Service):
+
+```
+http://localhost:3000
+```
+
+Example public hostname: `https://oer.yourdomain.com` → then set in `backend/.env`:
+
+```env
+CORS_ORIGINS=http://localhost:3000,https://oer.yourdomain.com
+PUBLIC_BASE_URL=https://oer.yourdomain.com
+```
+
+## Admin
+
+1. Set admin email/password in `backend/.env` (not in the UI).
+2. Set `CIRCUITNOTION_API_KEY` and `OPENAI_BASE_URL=https://api.circuitnotion.com/v1` ([API docs](https://circuitnotion.com/Api_Documentation)). Text: `circuit-2-turbo`. Images: `OPENAI_IMAGE_MODEL=gpt-image-2` (`OPENAI_IMAGE_QUALITY=medium`). Never send `response_format`.
+3. Log in → **Admin** → **Generate pack** (poster image via CircuitNotion + caption + elaboration + case + questions).
+4. **Publish to feed** so learners see it.
+5. **Post to IG & X** — posts live when API keys are set; otherwise returns ready-to-export status with the reason.
+
+### Maintain the OER program brief
+
+Open **Brief** in the admin navigation. Review the values initially derived from
+`accademy3.txt`, then add the approved clinical references, local protocols,
+training context, safety boundaries, language, and responsible educator.
+
+Select **Save and activate** to create a new version. Previous versions remain in
+the history for audit purposes. The active version is automatically injected into
+all new poster/content generation and learner grading; learners do not edit this
+platform-wide brief.
+
+### Social API keys (optional)
+
+In `backend/.env`:
+
+```env
+X_API_KEY=
+X_API_SECRET=
+X_ACCESS_TOKEN=
+X_ACCESS_TOKEN_SECRET=
+INSTAGRAM_ACCESS_TOKEN=
+INSTAGRAM_USER_ID=
+PUBLIC_BASE_URL=https://your-public-api.example.com
+```
+
+Instagram requires a **public HTTPS** image URL (`PUBLIC_BASE_URL`), not localhost.
+
+## Learner
+
+1. **Sign up** with cadre and training site.
+2. Open **Feed** → open a pack → answer questions → get AI score and feedback.
+
+## Security notes
+
+- Credentials live only in environment / `.env`.
+- Do not publish admin passwords in README, UI, or chat.
+- Use a strong `JWT_SECRET` in production.
+- After initial setup you may set `BOOTSTRAP_ADMIN_SYNC=false`.
+
+## Persistent admin memory
+
+ChatGPT export conversations can be imported as admin memory:
+
+```bash
+docker compose run --rm \
+  -v "/absolute/path/to/export.zip:/import/admin-export.zip:ro" \
+  api python -m app.scripts.import_admin_memory \
+  /import/admin-export.zip \
+  --admin-email "your-admin@example.com"
+```
+
+The importer is idempotent and supports recovering complete conversation batches
+from a truncated ZIP. It stores only the admin's messages, excludes conversations
+marked “do not remember,” and does not copy old assistant answers. When an admin
+generates a pack, the agent retrieves relevant prior work plus preference/style
+conversations and uses them for continuity. Current clinical grounding and safety
+rules always take priority.
