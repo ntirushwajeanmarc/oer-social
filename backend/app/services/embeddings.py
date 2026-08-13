@@ -76,7 +76,16 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         # API may return out of order; sort by index
         ordered = sorted(result.data, key=lambda d: d.index)
         for item in ordered:
-            vec = list(item.embedding)
+            raw = item.embedding
+            if isinstance(raw, str):
+                # Some proxies return a JSON string; parse if possible.
+                import json
+
+                try:
+                    raw = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("Embedding API returned a non-numeric vector") from exc
+            vec = [float(x) for x in list(raw)]
             if settings.openai_embedding_dims and len(vec) != settings.openai_embedding_dims:
                 logger.warning(
                     "Embedding dim mismatch: got %s expected %s",

@@ -166,10 +166,16 @@ class AiChatCreate(BaseModel):
     title: str = Field(default="", max_length=500)
 
 
+class ContinueImportRequest(BaseModel):
+    mode: str = Field(default="work", pattern="^(work|personal)$")
+    project_id: str | None = None
+
+
 class AiMessageOut(BaseModel):
     id: str
     role: str
     content: str
+    image_path: str = ""
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -198,14 +204,34 @@ class AiChatListItem(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AiChatUpdate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+
+
 class AiMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=12000)
     make_feed: bool = False
 
 
+class AiMessageUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=12000)
+    regenerate: bool = True
+
+
+class AiImageCreate(BaseModel):
+    prompt: str = Field(min_length=3, max_length=4000)
+    make_feed: bool = False
+    style: str = Field(
+        default="poster",
+        pattern="^(poster|general)$",
+        description="poster = clinical education poster; general = freer image",
+    )
+
+
 class AiMessageResponse(BaseModel):
     message: AiMessageOut
     draft_pack_id: str | None = None
+    chat: AiChatOut | None = None
 
 
 class HistoryItem(BaseModel):

@@ -124,6 +124,13 @@ async def ensure_schema() -> None:
         await conn.execute(
             text("ALTER TABLE content_packs ALTER COLUMN topic TYPE TEXT")
         )
+        await conn.execute(
+            text(
+                "ALTER TABLE ai_messages "
+                "ADD COLUMN IF NOT EXISTS image_path VARCHAR(500) DEFAULT ''"
+            )
+        )
+        Path(settings.media_dir, "chat").mkdir(parents=True, exist_ok=True)
 
 
 @asynccontextmanager

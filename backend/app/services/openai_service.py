@@ -80,8 +80,15 @@ async def generate_content_pack(
     return _parse_json(raw)
 
 
-async def generate_poster_image(*, visual_prompt: str, title: str, pack_id: str) -> str:
-    """Generate a poster PNG via CircuitNotion /images/generations and save locally."""
+async def generate_image(
+    *,
+    prompt: str,
+    filename_stem: str,
+    subdir: str = "chat",
+    educational_poster: bool = False,
+    title: str = "",
+) -> str:
+    """Generate a PNG via CircuitNotion /images/generations and save locally."""
     api_key = (settings.circuitnotion_api_key or settings.openai_api_key or "").strip()
     if not api_key:
         raise RuntimeError(
@@ -92,28 +99,35 @@ async def generate_poster_image(*, visual_prompt: str, title: str, pack_id: str)
     model = (settings.openai_image_model or "").strip()
     if not model:
         raise RuntimeError(
-            "OPENAI_IMAGE_MODEL is empty. Set it to dall-e-3 (or gpt-image-2) for CircuitNotion."
+            "OPENAI_IMAGE_MODEL is empty. Set it to gpt-image-2 for CircuitNotion."
         )
 
     media_root = Path(settings.media_dir)
-    posters_dir = media_root / "posters"
-    posters_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = media_root / subdir
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    prompt = (
-        f"Educational medical poster design. Title concept: {title}. "
-        f"{visual_prompt}. "
-        "Style: clean Swiss-Nordic clinical education poster, flat vector, "
-        "deep teal and ice-blue palette, high readability, no photorealistic faces, "
-        "no logos of real brands, suitable for Instagram square."
-    )[:3900]
+    if educational_poster:
+        full_prompt = (
+            f"Educational medical poster design. Title concept: {title or 'Teaching poster'}. "
+            f"{prompt}. "
+            "Style: clean Swiss-Nordic clinical education poster, flat vector, "
+            "deep teal and ice-blue palette, high readability, no photorealistic faces, "
+            "no logos of real brands, suitable for Instagram square."
+        )
+    else:
+        full_prompt = (
+            f"{prompt}. "
+            "Clean professional clinical education aesthetic, Nordic minimal, "
+            "suitable for teaching materials. No photorealistic faces, no brand logos."
+        )
 
-    filename = f"{pack_id}-{uuid4().hex[:8]}.png"
-    dest = posters_dir / filename
+    filename = f"{filename_stem}-{uuid4().hex[:8]}.png"
+    dest = out_dir / filename
 
     # Raw HTTP so the OpenAI SDK cannot inject response_format (rejected upstream).
     body: dict = {
         "model": model,
-        "prompt": prompt,
+        "prompt": full_prompt[:3900],
         "size": "1024x1024",
     }
     if model.startswith("gpt-image"):
@@ -153,7 +167,18 @@ async def generate_poster_image(*, visual_prompt: str, title: str, pack_id: str)
         else:
             raise RuntimeError("Image API returned no image data")
 
-    return f"/media/posters/{filename}"
+    return f"/media/{subdir}/{filename}"
+
+
+async def generate_poster_image(*, visual_prompt: str, title: str, pack_id: str) -> str:
+    """Generate a teaching poster PNG for a content pack."""
+    return await generate_image(
+        prompt=visual_prompt,
+        filename_stem=pack_id,
+        subdir="posters",
+        educational_poster=True,
+        title=title,
+    )
 
 
 async def chat_completion(

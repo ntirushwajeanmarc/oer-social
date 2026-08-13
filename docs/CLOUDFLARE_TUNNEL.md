@@ -6,12 +6,12 @@ Expose your local Docker stack on a public HTTPS URL without opening router port
 
 After `docker compose up --build`:
 
-| Service | Local URL | Purpose |
-| --- | --- | --- |
-| **Web (Next.js)** | `http://localhost:3000` | Main app — learners & admin UI |
-| **API (FastAPI)** | `http://localhost:8000` | REST API + `/media` poster files |
-| **API docs** | `http://localhost:8000/docs` | Swagger (optional, dev only) |
-| **Postgres** | `localhost:5434` | Database — **do not** expose via tunnel |
+| Service           | Local URL                    | Purpose                                 |
+| ----------------- | ---------------------------- | --------------------------------------- |
+| **Web (Next.js)** | `http://localhost:3000`      | Main app — learners & admin UI          |
+| **API (FastAPI)** | `http://localhost:8000`      | REST API + `/media` poster files        |
+| **API docs**      | `http://localhost:8000/docs` | Swagger (optional, dev only)            |
+| **Postgres**      | `localhost:5434`             | Database — **do not** expose via tunnel |
 
 The frontend proxies `/api/*` and `/media/*` to the backend, so **one tunnel to port 3000 is enough** for normal use and Instagram image URLs.
 
@@ -23,13 +23,13 @@ In [Cloudflare Zero Trust](https://one.dash.cloudflare.com/) → **Networks** �
 
 ### Recommended (single hostname)
 
-| Field | Value |
-| --- | --- |
-| **Subdomain** | `oer` (or any name you prefer) |
-| **Domain** | Your zone, e.g. `yourdomain.com` |
-| **Path** | *(leave empty)* |
-| **Type** | HTTP |
-| **URL** | `http://web:3000` when `cloudflared` runs in Docker Compose |
+| Field         | Value                                                       |
+| ------------- | ----------------------------------------------------------- |
+| **Subdomain** | `oer` (or any name you prefer)                              |
+| **Domain**    | Your zone, e.g. `yourdomain.com`                            |
+| **Path**      | _(leave empty)_                                             |
+| **Type**      | HTTP                                                        |
+| **URL**       | `http://web:3000` when `cloudflared` runs in Docker Compose |
 
 Public URL example: `https://oer.yourdomain.com`
 
@@ -39,8 +39,8 @@ If you run `cloudflared` on the host instead of Docker, use `http://localhost:30
 
 Only needed if you want Swagger or API access without the Next.js app:
 
-| Public hostname | Local URL |
-| --- | --- |
+| Public hostname                  | Local URL               |
+| -------------------------------- | ----------------------- |
 | `https://api.oer.yourdomain.com` | `http://localhost:8000` |
 
 If you use only the web hostname, set `PUBLIC_BASE_URL` to the **web** URL — Next.js forwards `/media/...` to the API.
@@ -203,13 +203,13 @@ PUBLIC_BASE_URL=https://oer.yourdomain.com
 
 ## Troubleshooting
 
-| Symptom | Fix |
-| --- | --- |
-| 502 / connection refused | Ensure `docker compose up` is running and port 3000 is listening |
-| Login works locally but not on tunnel | Add tunnel URL to `CORS_ORIGINS` and restart `api` |
-| Instagram post fails | Set `PUBLIC_BASE_URL=https://oer.yourdomain.com` (HTTPS, no trailing slash) |
-| API calls fail on tunnel URL | Use the **web** hostname (3000), not 8000, unless frontend env is changed |
-| Mixed content errors | Tunnel URL must be `https://`; do not hardcode `http://localhost` in frontend |
+| Symptom                               | Fix                                                                           |
+| ------------------------------------- | ----------------------------------------------------------------------------- |
+| 502 / connection refused              | Ensure `docker compose up` is running and port 3000 is listening              |
+| Login works locally but not on tunnel | Add tunnel URL to `CORS_ORIGINS` and restart `api`                            |
+| Instagram post fails                  | Set `PUBLIC_BASE_URL=https://oer.yourdomain.com` (HTTPS, no trailing slash)   |
+| API calls fail on tunnel URL          | Use the **web** hostname (3000), not 8000, unless frontend env is changed     |
+| Mixed content errors                  | Tunnel URL must be `https://`; do not hardcode `http://localhost` in frontend |
 
 ---
 

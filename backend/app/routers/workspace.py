@@ -22,11 +22,15 @@ from app.schemas import (
     AiChatCreate,
     AiChatListItem,
     AiChatOut,
+    AiChatUpdate,
+    AiImageCreate,
     AiMessageCreate,
     AiMessageOut,
     AiMessageResponse,
+    AiMessageUpdate,
     AiProjectCreate,
     AiProjectOut,
+    ContinueImportRequest,
     HistoryItem,
     ImportConversationOut,
 )
@@ -136,6 +140,70 @@ async def get_import(
     return row
 
 
+@router.post("/imports/{import_id}/continue", response_model=AiChatOut, status_code=201)
+async def continue_import(
+    import_id: str,
+    payload: ContinueImportRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AiChat:
+    """Start a new CircuitNotion chat seeded with an imported ChatGPT conversation."""
+    row = await db.get(AdminMemoryConversation, import_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Imported conversation not found")
+
+    project_id = payload.project_id
+    if project_id:
+        project = await db.get(AiProject, project_id)
+        if not project or project.admin_id != admin.id:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+    title = f"Continue: {row.title or 'Imported chat'}".strip()[:500]
+    chat = AiChat(
+        admin_id=admin.id,
+        project_id=project_id,
+        title=title,
+        mode=payload.mode,
+    )
+    db.add(chat)
+    await db.flush()
+
+    transcript = (row.user_text or "").strip()
+    # Keep enough prior thread for continuity without blowing the context window.
+    if len(transcript) > 14000:
+        transcript = transcript[:7000].rstrip() + "\n\n…[middle omitted]…\n\n" + transcript[-7000:].lstrip()
+
+    db.add(
+        AiMessage(
+            chat_id=chat.id,
+            role="system",
+            content=(
+                "CONTINUATION CONTEXT — imported ChatGPT conversation.\n"
+                f"Title: {row.title or 'Untitled'}\n"
+                "The admin is continuing this thread on CircuitNotion / OER Social. "
+                "Treat the transcript below as prior conversation history. "
+                "Pick up themes, decisions, and unfinished work. Do not restart from scratch "
+                "unless asked. Do not invent clinical protocols.\n\n"
+                f"--- IMPORTED TRANSCRIPT ---\n{transcript}"
+            ),
+        )
+    )
+    db.add(
+        AiMessage(
+            chat_id=chat.id,
+            role="assistant",
+            content=(
+                f"Continuing from **{row.title or 'your imported conversation'}**.\n\n"
+                "I’ve loaded that history as context on CircuitNotion. "
+                "What should we pick up next?"
+            ),
+        )
+    )
+    chat.updated_at = datetime.now(UTC)
+    await db.commit()
+    return await _load_chat(db, chat.id, admin.id)
+
+
 @router.get("/chats", response_model=list[AiChatListItem])
 async def list_chats(
     mode: str | None = Query(default=None, pattern="^(work|personal)$"),
@@ -184,6 +252,31 @@ async def get_chat(
     return await _load_chat(db, chat_id, admin.id)
 
 
+@router.patch("/chats/{chat_id}", response_model=AiChatOut)
+async def rename_chat(
+    chat_id: str,
+    payload: AiChatUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AiChat:
+    chat = await _load_chat(db, chat_id, admin.id)
+    chat.title = payload.title.strip()[:500] or chat.title
+    chat.updated_at = datetime.now(UTC)
+    await db.commit()
+    return await _load_chat(db, chat.id, admin.id)
+
+
+@router.delete("/chats/{chat_id}", status_code=204)
+async def delete_chat(
+    chat_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    chat = await _load_chat(db, chat_id, admin.id)
+    await db.delete(chat)
+    await db.commit()
+
+
 @router.post("/chats/{chat_id}/messages", response_model=AiMessageResponse)
 async def send_message(
     chat_id: str,
@@ -196,12 +289,201 @@ async def send_message(
     if not content:
         raise HTTPException(status_code=400, detail="Message cannot be empty")
 
-    user_msg = AiMessage(chat_id=chat.id, role="user", content=content)
+    user_msg = AiMessage(chat_id=chat.id, role="user", content=content, image_path="")
     db.add(user_msg)
 
     if chat.title in ("New chat", "Personal chat") or not chat.title:
         chat.title = content[:80].strip() or chat.title
 
+    try:
+        assistant_msg, draft_pack_id = await _complete_assistant_turn(
+            db,
+            chat=chat,
+            admin=admin,
+            user_content=content,
+            make_feed=payload.make_feed,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"CircuitNotion chat error: {exc}") from exc
+
+    await db.commit()
+    await db.refresh(assistant_msg)
+    return AiMessageResponse(
+        message=AiMessageOut.model_validate(assistant_msg),
+        draft_pack_id=draft_pack_id,
+        chat=AiChatOut.model_validate(await _load_chat(db, chat.id, admin.id)),
+    )
+
+
+@router.patch("/chats/{chat_id}/messages/{message_id}", response_model=AiMessageResponse)
+async def edit_message(
+    chat_id: str,
+    message_id: str,
+    payload: AiMessageUpdate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AiMessageResponse:
+    chat = await _load_chat(db, chat_id, admin.id)
+    target = next((m for m in chat.messages if m.id == message_id), None)
+    if not target or target.role != "user":
+        raise HTTPException(status_code=404, detail="User message not found")
+
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    ordered = sorted(
+        chat.messages,
+        key=lambda m: (m.created_at or datetime.min.replace(tzinfo=UTC), m.id),
+    )
+    try:
+        idx = next(i for i, m in enumerate(ordered) if m.id == target.id)
+    except StopIteration as exc:
+        raise HTTPException(status_code=404, detail="User message not found") from exc
+    for msg in ordered[idx + 1 :]:
+        await db.delete(msg)
+
+    target.content = content
+    chat.updated_at = datetime.now(UTC)
+    await db.flush()
+    chat = await _load_chat(db, chat_id, admin.id)
+
+    draft_pack_id: str | None = None
+    assistant_msg: AiMessage | None = None
+    if payload.regenerate:
+        try:
+            assistant_msg, draft_pack_id = await _complete_assistant_turn(
+                db,
+                chat=chat,
+                admin=admin,
+                user_content=content,
+                make_feed=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await db.commit()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Message edited, but regenerate failed: {exc}",
+            ) from exc
+
+    await db.commit()
+    chat_out = await _load_chat(db, chat.id, admin.id)
+    if assistant_msg is None:
+        # Return the edited user message when not regenerating.
+        edited = next(m for m in chat_out.messages if m.id == message_id)
+        return AiMessageResponse(
+            message=AiMessageOut.model_validate(edited),
+            draft_pack_id=None,
+            chat=AiChatOut.model_validate(chat_out),
+        )
+    await db.refresh(assistant_msg)
+    return AiMessageResponse(
+        message=AiMessageOut.model_validate(assistant_msg),
+        draft_pack_id=draft_pack_id,
+        chat=AiChatOut.model_validate(chat_out),
+    )
+
+
+@router.delete("/chats/{chat_id}/messages/{message_id}", status_code=204)
+async def delete_message(
+    chat_id: str,
+    message_id: str,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    chat = await _load_chat(db, chat_id, admin.id)
+    target = next((m for m in chat.messages if m.id == message_id), None)
+    if not target or target.role == "system":
+        raise HTTPException(status_code=404, detail="Message not found")
+    await db.delete(target)
+    chat.updated_at = datetime.now(UTC)
+    await db.commit()
+
+
+@router.post("/chats/{chat_id}/images", response_model=AiMessageResponse)
+async def generate_chat_image(
+    chat_id: str,
+    payload: AiImageCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AiMessageResponse:
+    chat = await _load_chat(db, chat_id, admin.id)
+    prompt = payload.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    user_msg = AiMessage(
+        chat_id=chat.id,
+        role="user",
+        content=f"Generate image: {prompt}",
+        image_path="",
+    )
+    db.add(user_msg)
+    if chat.title in ("New chat", "Personal chat") or not chat.title:
+        chat.title = f"Image: {prompt[:60]}".strip()
+
+    try:
+        image_path = await openai_service.generate_image(
+            prompt=prompt,
+            filename_stem=chat.id,
+            subdir="chat",
+            educational_poster=payload.style == "poster",
+            title=prompt[:120],
+        )
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"Image generation failed: {exc}") from exc
+
+    assistant_msg = AiMessage(
+        chat_id=chat.id,
+        role="assistant",
+        content=f"Here’s an image for: **{prompt}**",
+        image_path=image_path,
+    )
+    db.add(assistant_msg)
+    chat.updated_at = datetime.now(UTC)
+
+    draft_pack_id: str | None = None
+    if payload.make_feed:
+        try:
+            draft_pack_id = await _create_draft_pack_from_chat(
+                db,
+                admin=admin,
+                user_message=prompt,
+                assistant_reply=f"Teaching visual for: {prompt}",
+                existing_image_path=image_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await db.commit()
+            await db.refresh(assistant_msg)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Image saved in chat, but draft feed pack failed: {exc}. "
+                    "You can still download the image or retry feed creation."
+                ),
+            ) from exc
+
+    await db.commit()
+    await db.refresh(assistant_msg)
+    return AiMessageResponse(
+        message=AiMessageOut.model_validate(assistant_msg),
+        draft_pack_id=draft_pack_id,
+        chat=AiChatOut.model_validate(await _load_chat(db, chat.id, admin.id)),
+    )
+
+
+async def _complete_assistant_turn(
+    db: AsyncSession,
+    *,
+    chat: AiChat,
+    admin: User,
+    user_content: str,
+    make_feed: bool,
+) -> tuple[AiMessage, str | None]:
     brief_text = ""
     project_note = ""
     project_name = ""
@@ -222,7 +504,7 @@ async def send_message(
         if m.role == "user" and (m.content or "").strip()
     ][-3:]
     memory_query = build_memory_query(
-        current_message=content,
+        current_message=user_content,
         chat_title=chat.title or "",
         project_name=project_name,
         project_description=project_description,
@@ -235,65 +517,48 @@ async def send_message(
         profile="chat",
         exclude_chat_id=chat.id,
     )
-
+    continuation = "\n\n".join(
+        m.content for m in chat.messages if m.role == "system" and (m.content or "").strip()
+    )
     system = _system_prompt(
         mode=chat.mode,
-        make_feed=payload.make_feed and chat.mode == "personal",
+        make_feed=make_feed,
         brief_text=brief_text,
         project_note=project_note,
         memory=memory,
+        continuation=continuation,
     )
-
     history_messages = [
         {"role": m.role, "content": m.content}
         for m in chat.messages
         if m.role in ("user", "assistant")
     ][-28:]
-    history_messages.append({"role": "user", "content": content})
+    # Ensure the current user turn is last (already in history if flushed).
+    if not history_messages or history_messages[-1].get("content") != user_content:
+        history_messages.append({"role": "user", "content": user_content})
 
-    try:
-        reply = await openai_service.chat_completion(
-            messages=[{"role": "system", "content": system}, *history_messages],
-            temperature=0.55 if chat.mode == "personal" else 0.45,
-        )
-    except Exception as exc:  # noqa: BLE001
-        await db.rollback()
-        raise HTTPException(status_code=502, detail=f"CircuitNotion chat error: {exc}") from exc
-
+    reply = await openai_service.chat_completion(
+        messages=[{"role": "system", "content": system}, *history_messages],
+        temperature=0.55 if chat.mode == "personal" else 0.45,
+    )
     if not reply:
         reply = "I could not generate a reply. Please try again."
 
-    assistant_msg = AiMessage(chat_id=chat.id, role="assistant", content=reply)
+    assistant_msg = AiMessage(
+        chat_id=chat.id, role="assistant", content=reply, image_path=""
+    )
     db.add(assistant_msg)
     chat.updated_at = datetime.now(UTC)
 
     draft_pack_id: str | None = None
-    if payload.make_feed and chat.mode == "personal":
-        try:
-            draft_pack_id = await _create_draft_pack_from_chat(
-                db,
-                admin=admin,
-                user_message=content,
-                assistant_reply=reply,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Keep the chat reply even if pack draft fails.
-            await db.commit()
-            await db.refresh(assistant_msg)
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"Chat reply saved, but draft feed pack failed: {exc}. "
-                    "You can retry with the feed toggle, or generate a pack from Create."
-                ),
-            ) from exc
-
-    await db.commit()
-    await db.refresh(assistant_msg)
-    return AiMessageResponse(
-        message=AiMessageOut.model_validate(assistant_msg),
-        draft_pack_id=draft_pack_id,
-    )
+    if make_feed:
+        draft_pack_id = await _create_draft_pack_from_chat(
+            db,
+            admin=admin,
+            user_message=user_content,
+            assistant_reply=reply,
+        )
+    return assistant_msg, draft_pack_id
 
 
 def _system_prompt(
@@ -303,6 +568,7 @@ def _system_prompt(
     brief_text: str,
     project_note: str,
     memory: str,
+    continuation: str = "",
 ) -> str:
     memory_block = (
         "\n\nRELEVANT ADMIN MEMORY (imported ChatGPT history, preference pins, "
@@ -313,19 +579,25 @@ def _system_prompt(
         if memory
         else ""
     )
+    continuation_block = (
+        "\n\n" + continuation.strip()
+        if continuation.strip()
+        else ""
+    )
+    feed_note = (
+        "\nThe admin may turn this turn into a draft OER teaching pack for the learner feed. "
+        "Keep content clinically safe, educational, and suitable for open educational use."
+        if make_feed
+        else ""
+    )
     if mode == "personal":
-        feed_note = (
-            "\nThe admin may turn this turn into a draft OER teaching pack for the learner feed. "
-            "Keep content clinically safe, educational, and suitable for open educational use."
-            if make_feed
-            else ""
-        )
         return (
             "You are the admin's personal AI organization assistant on CircuitNotion "
             "(not ChatGPT). Help with planning, reflection, curriculum ideas, and "
             "personal organization tied to their educational work. Be concise and practical. "
             "When memory is present, recall preferences and unfinished threads explicitly."
             + feed_note
+            + continuation_block
             + memory_block
         )
 
@@ -335,10 +607,14 @@ def _system_prompt(
         "Stay clinically safe; prefer open educational framing; do not invent site-specific protocols.",
         "Use retrieved memory to continue themes already covered and avoid repeating finished packs.",
     ]
+    if feed_note:
+        parts.append(feed_note)
     if brief_text:
         parts.append("\nACTIVE PROGRAM BRIEF:\n" + brief_text)
     if project_note:
         parts.append("\nCURRENT PROJECT:\n" + project_note)
+    if continuation_block:
+        parts.append(continuation_block)
     if memory_block:
         parts.append(memory_block)
     return "\n".join(parts)
@@ -350,6 +626,7 @@ async def _create_draft_pack_from_chat(
     admin: User,
     user_message: str,
     assistant_reply: str,
+    existing_image_path: str = "",
 ) -> str:
     extracted = await openai_service.extract_pack_topic(
         user_message=user_message,
@@ -378,7 +655,7 @@ async def _create_draft_pack_from_chat(
         poster_title=str(data.get("poster_title", topic))[:240],
         poster_caption=str(data.get("poster_caption", "")),
         poster_visual_prompt=str(data.get("poster_visual_prompt", "")),
-        poster_image_path="",
+        poster_image_path=existing_image_path or "",
         elaboration=str(data.get("elaboration", "")),
         case_study=str(data.get("case_study", "")),
     )
@@ -401,7 +678,7 @@ async def _create_draft_pack_from_chat(
             )
         )
 
-    if (settings.openai_image_model or "").strip():
+    if not pack.poster_image_path and (settings.openai_image_model or "").strip():
         try:
             pack.poster_image_path = await openai_service.generate_poster_image(
                 visual_prompt=pack.poster_visual_prompt,
