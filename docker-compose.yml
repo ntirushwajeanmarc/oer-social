@@ -48,18 +48,36 @@ services:
       BACKEND_URL: http://api:8000
     depends_on:
       - api
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 25s
 
-  # Cloudflare Tunnel — optional. Start with: docker compose --profile tunnel up -d
-  # Token from project .env (CLOUDFLARE_TUNNEL_TOKEN). Public Hostname → http://web:3000
+  # Production tunnel ONLY. Enable on the VPS with:
+  #   COMPOSE_PROFILES=tunnel
+  #   CLOUDFLARE_TUNNEL_TOKEN=...
+  # in the project .env — then `docker compose up -d` starts it.
+  #
+  # NEVER run this profile on a laptop with the same production token.
+  # Multiple connectors → intermittent Cloudflare 502s.
   cloudflared:
     profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run
     environment:
-      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env (VPS only)}
     depends_on:
-      - web
+      web:
+        condition: service_healthy
 
 volumes:
   oer_pg:
