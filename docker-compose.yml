@@ -49,9 +49,10 @@ services:
     depends_on:
       - api
 
-  # Cloudflare Tunnel — token from backend/.env (also loaded via project .env for Compose)
-  # In Zero Trust → Public Hostname, set Service URL to: http://web:3000
+  # Cloudflare Tunnel — optional. Start with: docker compose --profile tunnel up -d
+  # Token from project .env (CLOUDFLARE_TUNNEL_TOKEN). Public Hostname → http://web:3000
   cloudflared:
+    profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
     command: tunnel --no-autoupdate run

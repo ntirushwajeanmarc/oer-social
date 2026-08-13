@@ -1,0 +1,452 @@
+@import "tailwindcss";
+
+:root {
+  --snow: #f3f6f8;
+  --ice: #e4eef2;
+  --fjord: #12303c;
+  --glacier: #4a7384;
+  --ink: #121a20;
+  --mist: #7f949e;
+  --canvas: #eef2f5;
+  --surface: #fbfcfd;
+  --sidebar: #f0f4f6;
+  --panel: rgba(251, 252, 253, 0.92);
+  --line: rgba(18, 48, 60, 0.1);
+  --user-bubble: #12303c;
+  --touch: 2.875rem;
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+  --chat-composer-shadow: 0 0 0 1px rgba(18, 48, 60, 0.08),
+    0 8px 28px rgba(18, 48, 60, 0.08);
+}
+
+@theme inline {
+  --color-snow: var(--snow);
+  --color-ice: var(--ice);
+  --color-fjord: var(--fjord);
+  --color-glacier: var(--glacier);
+  --color-ink: var(--ink);
+  --color-mist: var(--mist);
+  --font-sans: var(--font-plex-sans);
+  --font-display: var(--font-fraunces);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: var(--canvas);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 8% -8%, rgba(74, 115, 132, 0.12), transparent 52%),
+    radial-gradient(ellipse 55% 35% at 96% 0%, rgba(18, 48, 60, 0.05), transparent 48%),
+    linear-gradient(180deg, #f5f8fa 0%, #eef2f5 100%);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--font-plex-sans), sans-serif;
+  min-height: 100vh;
+  min-height: 100dvh;
+  line-height: 1.5;
+  overscroll-behavior-y: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.font-display {
+  font-family: var(--font-fraunces), serif;
+}
+
+.panel {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  backdrop-filter: blur(10px);
+  border-radius: 0.35rem;
+}
+
+/* ChatGPT-style conversation surface */
+.chat-shell {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  background: var(--surface);
+}
+
+.chat-sidebar {
+  display: flex;
+  width: 17rem;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--sidebar);
+}
+
+.chat-thread {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  background:
+    radial-gradient(ellipse 70% 40% at 50% 0%, rgba(74, 115, 132, 0.06), transparent 60%),
+    var(--surface);
+}
+
+.chat-scroll {
+  flex: 1;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.chat-message-row {
+  animation: chat-fade-in 0.28s ease-out both;
+}
+
+@keyframes chat-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-composer {
+  border: 1px solid transparent;
+  background: var(--surface);
+  box-shadow: var(--chat-composer-shadow);
+  border-radius: 1.35rem;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.chat-composer:focus-within {
+  border-color: rgba(74, 115, 132, 0.35);
+  box-shadow: 0 0 0 1px rgba(74, 115, 132, 0.2), 0 10px 32px rgba(18, 48, 60, 0.1);
+}
+
+.chat-avatar {
+  display: flex;
+  height: 1.75rem;
+  width: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.35rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.chat-avatar-ai {
+  background: var(--fjord);
+  color: var(--snow);
+}
+
+.chat-avatar-user {
+  background: var(--ice);
+  color: var(--fjord);
+}
+
+@media (max-width: 767px) {
+  .chat-sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    height: 100%;
+    max-width: 85vw;
+    transform: translateX(-105%);
+    transition: transform 0.22s ease;
+    box-shadow: 8px 0 32px rgba(18, 48, 60, 0.12);
+  }
+
+  .chat-sidebar.open {
+    transform: translateX(0);
+  }
+}
+
+.input-field {
+  width: 100%;
+  min-height: var(--touch);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.96);
+  padding: 0.85rem 1rem;
+  font-size: 16px; /* prevents iOS zoom on focus */
+  color: var(--ink);
+  outline: none;
+  border-radius: 0.35rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  appearance: none;
+}
+
+.input-field:focus {
+  border-color: color-mix(in srgb, var(--glacier) 70%, transparent);
+  box-shadow: 0 0 0 3px rgba(74, 115, 132, 0.12);
+}
+
+textarea.input-field {
+  min-height: 7.5rem;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.btn-primary,
+.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--touch);
+  padding: 0.8rem 1rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  cursor: pointer;
+  touch-action: manipulation;
+  user-select: none;
+  transition: background 0.15s ease, opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.btn-primary {
+  background: var(--fjord);
+  color: var(--snow);
+  border: none;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: #1a4252;
+}
+
+.btn-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-secondary {
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--fjord);
+}
+
+.btn-secondary:hover:not(:disabled) {
+  border-color: rgba(20, 50, 63, 0.35);
+}
+
+.btn-secondary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--touch);
+  padding: 0.8rem 1rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  border: 1px solid rgba(185, 28, 28, 0.25);
+  background: rgba(255, 255, 255, 0.55);
+  color: rgb(185 28 28 / 0.85);
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.action-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.action-grid > .btn-primary,
+.action-grid > .btn-secondary,
+.action-grid > .btn-danger,
+.action-grid > a {
+  width: 100%;
+}
+
+.action-grid > .span-2 {
+  grid-column: 1 / -1;
+}
+
+.sticky-generate {
+  position: sticky;
+  bottom: calc(4.25rem + var(--safe-bottom));
+  z-index: 30;
+  margin-top: 0.75rem;
+  padding-bottom: 0.25rem;
+}
+
+@media (min-width: 640px) {
+  .action-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .action-grid > .span-2 {
+    grid-column: auto;
+  }
+
+  .sticky-generate {
+    position: static;
+    bottom: auto;
+    margin-top: 0;
+    padding-bottom: 0;
+  }
+
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger {
+    width: auto;
+  }
+}
+
+@media (max-width: 639px) {
+  .btn-primary,
+  .btn-secondary,
+  .btn-danger {
+    width: 100%;
+  }
+}
+
+.md-body {
+  color: color-mix(in srgb, var(--ink) 75%, transparent);
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  overflow-wrap: anywhere;
+}
+
+.md-body > *:first-child {
+  margin-top: 0;
+}
+
+.md-body > *:last-child {
+  margin-bottom: 0;
+}
+
+.md-body p,
+.md-body ul,
+.md-body ol,
+.md-body blockquote,
+.md-body pre,
+.md-body table {
+  margin: 0.85em 0;
+}
+
+.md-body h1,
+.md-body h2,
+.md-body h3,
+.md-body h4 {
+  color: var(--fjord);
+  font-family: var(--font-fraunces), serif;
+  font-weight: 500;
+  line-height: 1.3;
+  margin: 1.15em 0 0.4em;
+}
+
+.md-body h1 {
+  font-size: 1.35rem;
+}
+
+.md-body h2 {
+  font-size: 1.2rem;
+}
+
+.md-body h3,
+.md-body h4 {
+  font-size: 1.05rem;
+}
+
+.md-body strong {
+  color: var(--fjord);
+  font-weight: 600;
+}
+
+.md-body em {
+  font-style: italic;
+}
+
+.md-body a {
+  color: var(--glacier);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.md-body ul,
+.md-body ol {
+  padding-left: 1.35rem;
+}
+
+.md-body ul {
+  list-style: disc;
+}
+
+.md-body ol {
+  list-style: decimal;
+}
+
+.md-body li {
+  margin: 0.3em 0;
+}
+
+.md-body li > ul,
+.md-body li > ol {
+  margin: 0.25em 0;
+}
+
+.md-body blockquote {
+  border-left: 2px solid var(--glacier);
+  color: color-mix(in srgb, var(--ink) 65%, transparent);
+  padding-left: 0.9rem;
+}
+
+.md-body code {
+  background: rgba(20, 50, 63, 0.06);
+  border-radius: 0.2rem;
+  font-size: 0.85em;
+  padding: 0.1em 0.35em;
+}
+
+.md-body pre {
+  background: rgba(20, 50, 63, 0.06);
+  overflow-x: auto;
+  padding: 0.85rem 1rem;
+}
+
+.md-body pre code {
+  background: transparent;
+  padding: 0;
+}
+
+.md-body hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 1.25em 0;
+}
+
+.md-body table {
+  border-collapse: collapse;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  width: 100%;
+}
+
+.md-body th,
+.md-body td {
+  border: 1px solid var(--line);
+  padding: 0.45rem 0.65rem;
+  text-align: left;
+}
+
+.md-body th {
+  background: rgba(20, 50, 63, 0.04);
+  color: var(--fjord);
+  font-weight: 600;
+}
