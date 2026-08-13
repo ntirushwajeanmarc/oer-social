@@ -378,6 +378,8 @@ async def send_message_stream(
             reply = "".join(chunks).strip() or (
                 "I could not generate a reply. Please try again."
             )
+            # Persist the assistant reply immediately so the UI can reconcile even
+            # if the client disconnects during a slow make_feed step.
             async with SessionLocal() as session:
                 live = await _load_chat(session, chat_id_val, admin_id)
                 assistant_msg = AiMessage(
@@ -388,17 +390,6 @@ async def send_message_stream(
                 )
                 session.add(assistant_msg)
                 live.updated_at = datetime.now(UTC)
-                draft_pack_id: str | None = None
-                if make_feed:
-                    admin_row = await session.get(User, admin_id)
-                    if not admin_row:
-                        raise RuntimeError("Admin account not found")
-                    draft_pack_id = await _create_draft_pack_from_chat(
-                        session,
-                        admin=admin_row,
-                        user_message=user_content,
-                        assistant_reply=reply,
-                    )
                 await session.commit()
                 await session.refresh(assistant_msg)
                 chat_out = await _load_chat(session, chat_id_val, admin_id)
@@ -408,12 +399,38 @@ async def send_message_stream(
                         "message": AiMessageOut.model_validate(
                             assistant_msg
                         ).model_dump(mode="json"),
-                        "draft_pack_id": draft_pack_id,
+                        "draft_pack_id": None,
                         "chat": AiChatOut.model_validate(chat_out).model_dump(
                             mode="json"
                         ),
                     }
                 )
+
+            if make_feed:
+                try:
+                    async with SessionLocal() as session:
+                        admin_row = await session.get(User, admin_id)
+                        if not admin_row:
+                            raise RuntimeError("Admin account not found")
+                        draft_pack_id = await _create_draft_pack_from_chat(
+                            session,
+                            admin=admin_row,
+                            user_message=user_content,
+                            assistant_reply=reply,
+                        )
+                        await session.commit()
+                    yield _sse(
+                        {"type": "feed", "draft_pack_id": draft_pack_id}
+                    )
+                except Exception as feed_exc:  # noqa: BLE001
+                    yield _sse(
+                        {
+                            "type": "feed_error",
+                            "detail": (
+                                f"Reply saved, but draft feed pack failed: {feed_exc}"
+                            ),
+                        }
+                    )
         except Exception as exc:  # noqa: BLE001
             yield _sse({"type": "error", "detail": f"CircuitNotion chat error: {exc}"})
 

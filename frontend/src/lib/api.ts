@@ -362,6 +362,7 @@ export const api = {
       onUser?: (message: AiMessage) => void;
       onDelta?: (text: string) => void;
       onDone?: (payload: AiMessageResponse) => void;
+      onFeed?: (draftPackId: string) => void;
       onError?: (detail: string) => void;
     }
   ) => {
@@ -386,50 +387,66 @@ export const api = {
     if (!res.body) {
       throw new Error("Streaming is not supported in this browser");
     }
+
+    const dispatch = (part: string) => {
+      const line = part
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith("data:"));
+      if (!line) return;
+      const raw = line.slice(5).trim();
+      if (!raw) return;
+      let event: {
+        type?: string;
+        message?: AiMessage;
+        text?: string;
+        detail?: string;
+        draft_pack_id?: string | null;
+        chat?: AiChat | null;
+      };
+      try {
+        event = JSON.parse(raw) as typeof event;
+      } catch {
+        return;
+      }
+      if (event.type === "user" && event.message) {
+        handlers.onUser?.(event.message);
+      } else if (event.type === "delta" && event.text) {
+        handlers.onDelta?.(event.text);
+      } else if (event.type === "done" && event.message) {
+        handlers.onDone?.({
+          message: event.message,
+          draft_pack_id: event.draft_pack_id ?? null,
+          chat: event.chat ?? null,
+        });
+      } else if (event.type === "feed" && event.draft_pack_id) {
+        handlers.onFeed?.(event.draft_pack_id);
+      } else if (event.type === "feed_error") {
+        handlers.onError?.(event.detail || "Draft feed pack failed");
+      } else if (event.type === "error") {
+        handlers.onError?.(event.detail || "Stream failed");
+      }
+    };
+
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const parts = buffer.split("\n\n");
-      buffer = parts.pop() ?? "";
-      for (const part of parts) {
-        const line = part
-          .split("\n")
-          .map((l) => l.trim())
-          .find((l) => l.startsWith("data:"));
-        if (!line) continue;
-        const raw = line.slice(5).trim();
-        if (!raw) continue;
-        let event: {
-          type?: string;
-          message?: AiMessage;
-          text?: string;
-          detail?: string;
-          draft_pack_id?: string | null;
-          chat?: AiChat | null;
-        };
-        try {
-          event = JSON.parse(raw) as typeof event;
-        } catch {
-          continue;
-        }
-        if (event.type === "user" && event.message) {
-          handlers.onUser?.(event.message);
-        } else if (event.type === "delta" && event.text) {
-          handlers.onDelta?.(event.text);
-        } else if (event.type === "done" && event.message) {
-          handlers.onDone?.({
-            message: event.message,
-            draft_pack_id: event.draft_pack_id ?? null,
-            chat: event.chat ?? null,
-          });
-        } else if (event.type === "error") {
-          handlers.onError?.(event.detail || "Stream failed");
-        }
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
       }
+      const parts = buffer.split("\n\n");
+      buffer = done ? "" : (parts.pop() ?? "");
+      for (const part of parts) {
+        if (part.trim()) dispatch(part);
+      }
+      // Flush a trailing event that may omit the final blank line.
+      if (done && buffer.trim()) {
+        dispatch(buffer);
+        buffer = "";
+      }
+      if (done) break;
     }
   },
   editWorkspaceMessage: (

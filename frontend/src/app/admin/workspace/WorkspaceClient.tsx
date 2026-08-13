@@ -390,11 +390,33 @@ export default function WorkspacePage() {
           setMakeFeed(false);
         }
       } else {
+        const chatId = activeChat.id;
         setStreaming(true);
         let finished = false;
         let streamError = "";
+        let localStream = "";
+
+        const mergeAssistant = (message: AiMessage, chat?: AiChat | null) => {
+          if (chat?.messages?.length) {
+            setActiveChat(chat);
+            return;
+          }
+          setActiveChat((prev) => {
+            if (!prev) return prev;
+            const withoutDup = prev.messages.filter((m) => m.id !== message.id);
+            // Drop any optimistic streaming placeholder
+            const withoutTemp = withoutDup.filter(
+              (m) => !m.id.startsWith("stream-")
+            );
+            return {
+              ...prev,
+              messages: [...withoutTemp, message],
+            };
+          });
+        };
+
         await api.streamWorkspaceMessage(
-          activeChat.id,
+          chatId,
           { content, make_feed: makeFeed },
           {
             onUser: (message) => {
@@ -413,31 +435,21 @@ export default function WorkspacePage() {
               });
             },
             onDelta: (text) => {
-              setStreamText((prev) => prev + text);
+              localStream += text;
+              setStreamText(localStream);
             },
             onDone: (res) => {
               finished = true;
-              setStreaming(false);
-              setStreamText("");
-              if (res.chat) {
-                applyChat(res.chat);
-              } else {
-                setActiveChat((prev) =>
-                  prev
-                    ? {
-                        ...prev,
-                        messages: [
-                          ...prev.messages.filter((m) => m.id !== res.message.id),
-                          res.message,
-                        ],
-                      }
-                    : prev
-                );
-              }
+              // Keep stream text visible until chat state includes the reply.
+              mergeAssistant(res.message, res.chat);
               if (res.draft_pack_id) {
                 setDraftPackId(res.draft_pack_id);
                 setMakeFeed(false);
               }
+            },
+            onFeed: (draftPackId) => {
+              setDraftPackId(draftPackId);
+              setMakeFeed(false);
             },
             onError: (detail) => {
               streamError = detail;
@@ -445,15 +457,58 @@ export default function WorkspacePage() {
             },
           }
         );
-        if (!finished) {
-          if (streamError) throw new Error(streamError);
-          setActiveChat(await api.getWorkspaceChat(activeChat.id));
+
+        // Always reconcile from the server so a dropped "done" event cannot
+        // wipe a reply that was already shown while streaming.
+        let reconciled: AiChat | null = null;
+        for (let attempt = 0; attempt < 6; attempt++) {
+          try {
+            reconciled = await api.getWorkspaceChat(chatId);
+            const visible = reconciled.messages.filter(
+              (m) => m.role === "user" || m.role === "assistant"
+            );
+            const last = visible[visible.length - 1];
+            if (last?.role === "assistant" && last.content.trim()) break;
+            if (finished && !localStream) break;
+          } catch {
+            /* retry */
+          }
+          await new Promise((r) => setTimeout(r, 250));
         }
+
+        if (reconciled) {
+          setActiveChat(reconciled);
+        } else if (localStream.trim()) {
+          // Last resort: keep what the user already saw.
+          setActiveChat((prev) => {
+            if (!prev) return prev;
+            const already = prev.messages.some(
+              (m) => m.role === "assistant" && m.content === localStream
+            );
+            if (already) return prev;
+            return {
+              ...prev,
+              messages: [
+                ...prev.messages.filter((m) => !m.id.startsWith("stream-")),
+                {
+                  id: `stream-${Date.now()}`,
+                  role: "assistant",
+                  content: localStream,
+                  created_at: new Date().toISOString(),
+                },
+              ],
+            };
+          });
+        } else if (!finished && streamError) {
+          throw new Error(streamError);
+        }
+
         setStreaming(false);
         setStreamText("");
       }
       await loadChats();
-      await loadHistory();
+      // Don't await history here — it is unrelated to the open thread and
+      // used to make the reply feel like it "left" for the History tab.
     } catch (err) {
       setDraft(content);
       setError(err instanceof Error ? err.message : "Send failed");
@@ -1015,7 +1070,15 @@ export default function WorkspacePage() {
                         </div>
                       </div>
                     ) : null}
-                    {streaming || (sending && !imageMode && streamText) ? (
+                    {streaming &&
+                    !visibleMessages.some(
+                      (m) =>
+                        m.role === "assistant" &&
+                        streamText &&
+                        (m.content === streamText ||
+                          m.content.startsWith(streamText.slice(0, 48)) ||
+                          streamText.startsWith(m.content.slice(0, 48)))
+                    ) ? (
                       <div className="chat-message-row mb-6 flex gap-3 sm:gap-3.5">
                         <div className="chat-avatar chat-avatar-ai" aria-hidden>
                           AI
