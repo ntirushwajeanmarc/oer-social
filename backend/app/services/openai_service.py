@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from collections.abc import AsyncIterator
 from pathlib import Path
 from uuid import uuid4
 
@@ -193,6 +194,29 @@ async def chat_completion(
         temperature=temperature,
     )
     return (completion.choices[0].message.content or "").strip()
+
+
+async def chat_completion_stream(
+    *,
+    messages: list[dict[str, str]],
+    temperature: float = 0.5,
+) -> AsyncIterator[str]:
+    """Yield text deltas from CircuitNotion (OpenAI-compatible stream)."""
+    client = get_client()
+    stream = await client.chat.completions.create(
+        model=settings.openai_model,
+        messages=messages,
+        temperature=temperature,
+        stream=True,
+    )
+    async for event in stream:
+        choices = getattr(event, "choices", None) or []
+        if not choices:
+            continue
+        delta = getattr(choices[0], "delta", None)
+        text = getattr(delta, "content", None) if delta is not None else None
+        if text:
+            yield text
 
 
 async def extract_pack_topic(*, user_message: str, assistant_reply: str) -> dict[str, str]:

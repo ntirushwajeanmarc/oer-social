@@ -355,6 +355,83 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  streamWorkspaceMessage: async (
+    chatId: string,
+    body: { content: string; make_feed?: boolean },
+    handlers: {
+      onUser?: (message: AiMessage) => void;
+      onDelta?: (text: string) => void;
+      onDone?: (payload: AiMessageResponse) => void;
+      onError?: (detail: string) => void;
+    }
+  ) => {
+    const res = await fetch(`${API_URL}/workspace/chats/${chatId}/messages/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...authHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      const message = await parseErrorMessage(text, res.statusText);
+      if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+      }
+      throw new Error(message || res.statusText);
+    }
+    if (!res.body) {
+      throw new Error("Streaming is not supported in this browser");
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split("\n\n");
+      buffer = parts.pop() ?? "";
+      for (const part of parts) {
+        const line = part
+          .split("\n")
+          .map((l) => l.trim())
+          .find((l) => l.startsWith("data:"));
+        if (!line) continue;
+        const raw = line.slice(5).trim();
+        if (!raw) continue;
+        let event: {
+          type?: string;
+          message?: AiMessage;
+          text?: string;
+          detail?: string;
+          draft_pack_id?: string | null;
+          chat?: AiChat | null;
+        };
+        try {
+          event = JSON.parse(raw) as typeof event;
+        } catch {
+          continue;
+        }
+        if (event.type === "user" && event.message) {
+          handlers.onUser?.(event.message);
+        } else if (event.type === "delta" && event.text) {
+          handlers.onDelta?.(event.text);
+        } else if (event.type === "done" && event.message) {
+          handlers.onDone?.({
+            message: event.message,
+            draft_pack_id: event.draft_pack_id ?? null,
+            chat: event.chat ?? null,
+          });
+        } else if (event.type === "error") {
+          handlers.onError?.(event.detail || "Stream failed");
+        }
+      }
+    }
+  },
   editWorkspaceMessage: (
     chatId: string,
     messageId: string,

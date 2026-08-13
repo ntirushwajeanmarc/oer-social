@@ -61,6 +61,8 @@ export default function WorkspacePage() {
   const [imageMode, setImageMode] = useState(false);
   const [imageStyle, setImageStyle] = useState<"poster" | "general">("poster");
   const [sending, setSending] = useState(false);
+  const [streaming, setStreaming] = useState(false);
+  const [streamText, setStreamText] = useState("");
   const [creating, setCreating] = useState(false);
   const [draftPackId, setDraftPackId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -124,7 +126,7 @@ export default function WorkspacePage() {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [visibleMessages.length, sending, tab, activeChat?.id]);
+  }, [visibleMessages.length, sending, streaming, streamText, tab, activeChat?.id]);
 
   useEffect(() => {
     const ta = textareaRef.current;
@@ -369,6 +371,7 @@ export default function WorkspacePage() {
     setSending(true);
     setError("");
     setDraftPackId(null);
+    setStreamText("");
     const content = draft.trim();
     setDraft("");
     try {
@@ -387,44 +390,75 @@ export default function WorkspacePage() {
           setMakeFeed(false);
         }
       } else {
-        const res = await api.sendWorkspaceMessage(activeChat.id, {
-          content,
-          make_feed: makeFeed,
-        });
-        applyChat(res.chat);
-        if (!res.chat) {
-          setActiveChat((prev) =>
-            prev
-              ? {
+        setStreaming(true);
+        let finished = false;
+        let streamError = "";
+        await api.streamWorkspaceMessage(
+          activeChat.id,
+          { content, make_feed: makeFeed },
+          {
+            onUser: (message) => {
+              setActiveChat((prev) => {
+                if (!prev) return prev;
+                const title =
+                  prev.title === "New chat" || prev.title === "Personal chat"
+                    ? content.slice(0, 80)
+                    : prev.title;
+                const withoutDup = prev.messages.filter((m) => m.id !== message.id);
+                return {
                   ...prev,
-                  title:
-                    prev.title === "New chat" || prev.title === "Personal chat"
-                      ? content.slice(0, 80)
-                      : prev.title,
-                  messages: [
-                    ...prev.messages,
-                    {
-                      id: `local-${Date.now()}`,
-                      role: "user",
-                      content,
-                      created_at: new Date().toISOString(),
-                    },
-                    res.message,
-                  ],
-                }
-              : prev
-          );
+                  title,
+                  messages: [...withoutDup, message],
+                };
+              });
+            },
+            onDelta: (text) => {
+              setStreamText((prev) => prev + text);
+            },
+            onDone: (res) => {
+              finished = true;
+              setStreaming(false);
+              setStreamText("");
+              if (res.chat) {
+                applyChat(res.chat);
+              } else {
+                setActiveChat((prev) =>
+                  prev
+                    ? {
+                        ...prev,
+                        messages: [
+                          ...prev.messages.filter((m) => m.id !== res.message.id),
+                          res.message,
+                        ],
+                      }
+                    : prev
+                );
+              }
+              if (res.draft_pack_id) {
+                setDraftPackId(res.draft_pack_id);
+                setMakeFeed(false);
+              }
+            },
+            onError: (detail) => {
+              streamError = detail;
+              setError(detail);
+            },
+          }
+        );
+        if (!finished) {
+          if (streamError) throw new Error(streamError);
+          setActiveChat(await api.getWorkspaceChat(activeChat.id));
         }
-        if (res.draft_pack_id) {
-          setDraftPackId(res.draft_pack_id);
-          setMakeFeed(false);
-        }
+        setStreaming(false);
+        setStreamText("");
       }
       await loadChats();
       await loadHistory();
     } catch (err) {
       setDraft(content);
       setError(err instanceof Error ? err.message : "Send failed");
+      setStreaming(false);
+      setStreamText("");
       if (activeChat) {
         try {
           setActiveChat(await api.getWorkspaceChat(activeChat.id));
@@ -576,7 +610,7 @@ export default function WorkspacePage() {
                     : "History"}
               </h1>
               <p className="truncate text-[11px] text-mist">
-                CircuitNotion · create, iterate, publish
+                Educational workspace · grounded in brief and history
               </p>
             </div>
             {isChatTab && activeChat ? (
@@ -800,14 +834,15 @@ export default function WorkspacePage() {
                 {!activeChat ? (
                   <div className="flex h-full min-h-[20rem] flex-col items-center justify-center px-6 text-center">
                     <div className="chat-avatar chat-avatar-ai mb-4 size-10 text-sm">
-                      CN
+                      AI
                     </div>
                     <h2 className="font-display text-2xl tracking-tight text-fjord sm:text-3xl">
-                      Your creative workspace
+                      Educational workspace
                     </h2>
-                    <p className="mt-2 max-w-md text-sm text-ink/50">
-                      Chat, generate images, draft feed packs, continue history —
-                      edit, copy, and delete as you iterate.
+                    <p className="mt-2 max-w-md text-sm leading-relaxed text-ink/50">
+                      Plan curriculum, continue imported history, draft feed packs,
+                      and generate teaching visuals — with replies grounded in your
+                      program brief.
                     </p>
                     <button
                       type="button"
@@ -815,24 +850,25 @@ export default function WorkspacePage() {
                       disabled={creating}
                       className="btn-primary mt-6 rounded-lg px-6"
                     >
-                      {creating ? "Starting…" : "Start a new chat"}
+                      {creating ? "Starting…" : "Start conversation"}
                     </button>
                   </div>
-                ) : visibleMessages.length === 0 ? (
+                ) : visibleMessages.length === 0 && !streaming ? (
                   <div className="flex h-full min-h-[16rem] flex-col items-center justify-center px-6 text-center">
                     <h2 className="font-display text-xl text-fjord sm:text-2xl">
                       {activeChat.title}
                     </h2>
-                    <p className="mt-2 text-sm text-ink/45">
-                      Ask anything, or toggle Image to create a visual.
+                    <p className="mt-2 max-w-sm text-sm text-ink/45">
+                      Describe the teaching outcome you need, or enable Image for a
+                      visual.
                     </p>
                   </div>
                 ) : (
                   <div className="mx-auto w-full max-w-3xl px-3 py-6 sm:px-6 sm:py-8">
                     {activeChat.title.startsWith("Continue:") ? (
-                      <p className="mb-5 rounded-lg border border-fjord/10 bg-ice/50 px-3 py-2 text-xs text-ink/55">
-                        Continuing from imported history — prior transcript is
-                        loaded as context.
+                      <p className="mb-5 border-l-2 border-fjord/25 bg-ice/40 px-3 py-2 text-xs leading-relaxed text-ink/55">
+                        Continuing imported history — prior transcript is loaded as
+                        context for this conversation.
                       </p>
                     ) : null}
                     {visibleMessages.map((m) => {
@@ -841,7 +877,7 @@ export default function WorkspacePage() {
                       return (
                         <div
                           key={m.id}
-                          className={`chat-message-row group mb-6 flex gap-3 sm:mb-8 sm:gap-4 ${
+                          className={`chat-message-row group mb-6 flex gap-3 sm:mb-7 sm:gap-3.5 ${
                             isUser ? "flex-row-reverse" : ""
                           }`}
                         >
@@ -851,13 +887,20 @@ export default function WorkspacePage() {
                             }`}
                             aria-hidden
                           >
-                            {isUser ? "Y" : "A"}
+                            {isUser ? "Y" : "AI"}
                           </div>
                           <div
-                            className={`min-w-0 max-w-[min(100%,42rem)] flex-1 ${
+                            className={`min-w-0 max-w-[min(100%,40rem)] flex-1 ${
                               isUser ? "flex flex-col items-end" : ""
                             }`}
                           >
+                            <p
+                              className={`mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-mist ${
+                                isUser ? "text-right" : ""
+                              }`}
+                            >
+                              {isUser ? "You" : "Assistant"}
+                            </p>
                             {editingId === m.id ? (
                               <div className="w-full space-y-2">
                                 <textarea
@@ -894,8 +937,8 @@ export default function WorkspacePage() {
                                 <div
                                   className={
                                     isUser
-                                      ? "rounded-2xl rounded-tr-md bg-[var(--user-bubble)] px-4 py-2.5 text-[0.95rem] leading-relaxed text-snow"
-                                      : "text-[0.95rem] leading-relaxed text-ink/85"
+                                      ? "rounded-xl bg-[var(--user-bubble)] px-4 py-2.5 text-[0.95rem] leading-relaxed text-snow"
+                                      : "chat-assistant-bubble text-[0.95rem] leading-relaxed text-ink/88"
                                   }
                                 >
                                   {isUser ? (
@@ -909,8 +952,8 @@ export default function WorkspacePage() {
                                     // eslint-disable-next-line @next/next/no-img-element
                                     <img
                                       src={img}
-                                      alt="Generated"
-                                      className="mt-3 max-h-80 w-full rounded-lg border border-[var(--line)] object-contain"
+                                      alt="Generated teaching visual"
+                                      className="mt-3 max-h-80 w-full rounded-md border border-[var(--line)] object-contain"
                                     />
                                   ) : null}
                                 </div>
@@ -959,14 +1002,42 @@ export default function WorkspacePage() {
                         </div>
                       );
                     })}
-                    {sending ? (
-                      <div className="chat-message-row mb-6 flex gap-3 sm:gap-4">
+                    {sending && imageMode ? (
+                      <div className="chat-message-row mb-6 flex gap-3 sm:gap-3.5">
                         <div className="chat-avatar chat-avatar-ai" aria-hidden>
-                          A
+                          AI
                         </div>
-                        <p className="pt-1 text-sm text-mist">
-                          {imageMode ? "Generating image…" : "Thinking…"}
-                        </p>
+                        <div>
+                          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-mist">
+                            Assistant
+                          </p>
+                          <p className="text-sm text-mist">Generating image…</p>
+                        </div>
+                      </div>
+                    ) : null}
+                    {streaming || (sending && !imageMode && streamText) ? (
+                      <div className="chat-message-row mb-6 flex gap-3 sm:gap-3.5">
+                        <div className="chat-avatar chat-avatar-ai" aria-hidden>
+                          AI
+                        </div>
+                        <div className="min-w-0 max-w-[min(100%,40rem)] flex-1">
+                          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-mist">
+                            Assistant
+                          </p>
+                          <div className="chat-assistant-bubble text-[0.95rem] leading-relaxed text-ink/88">
+                            {streamText ? (
+                              <>
+                                <Markdown content={streamText} />
+                                <span className="chat-stream-caret" aria-hidden />
+                              </>
+                            ) : (
+                              <p className="text-sm text-mist">
+                                Composing response
+                                <span className="chat-stream-dots" aria-hidden />
+                              </p>
+                            )}
+                          </div>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -1024,10 +1095,10 @@ export default function WorkspacePage() {
                       rows={1}
                       placeholder={
                         !activeChat
-                          ? "Start a chat to begin…"
+                          ? "Start a conversation to begin…"
                           : imageMode
-                            ? "Describe the image to generate…"
-                            : "Message your workspace…"
+                            ? "Describe the teaching visual…"
+                            : "Message the workspace…"
                       }
                       disabled={sending || !activeChat}
                       className="max-h-[180px] min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-base text-ink outline-none placeholder:text-ink/35 disabled:opacity-50"
@@ -1056,7 +1127,7 @@ export default function WorkspacePage() {
                     </button>
                   </div>
                   <p className="px-1 text-center text-[10px] text-mist">
-                    Enter to send · Edit trims later replies · Feed drafts stay
+                    Enter to send · Responses stream live · Feed drafts stay
                     unpublished until you review
                   </p>
                 </form>

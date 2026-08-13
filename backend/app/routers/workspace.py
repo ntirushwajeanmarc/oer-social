@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.config import settings
-from app.database import get_db
+from app.database import SessionLocal, get_db
 from app.models import (
     AdminMemoryConversation,
     AiChat,
@@ -318,6 +321,113 @@ async def send_message(
     )
 
 
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload, default=str)}\n\n"
+
+
+@router.post("/chats/{chat_id}/messages/stream")
+async def send_message_stream(
+    chat_id: str,
+    payload: AiMessageCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Stream assistant tokens as SSE: user → delta* → done | error."""
+    chat = await _load_chat(db, chat_id, admin.id)
+    content = payload.content.strip()
+    if not content:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    user_msg = AiMessage(chat_id=chat.id, role="user", content=content, image_path="")
+    db.add(user_msg)
+    if chat.title in ("New chat", "Personal chat") or not chat.title:
+        chat.title = content[:80].strip() or chat.title
+    await db.flush()
+    await db.refresh(user_msg)
+
+    try:
+        llm_messages, temperature = await _build_turn_messages(
+            db,
+            chat=chat,
+            admin=admin,
+            user_content=content,
+            make_feed=payload.make_feed,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        raise HTTPException(status_code=502, detail=f"Chat prep failed: {exc}") from exc
+
+    await db.commit()
+    user_out = AiMessageOut.model_validate(user_msg).model_dump(mode="json")
+    chat_id_val = chat.id
+    admin_id = admin.id
+    make_feed = payload.make_feed
+    user_content = content
+
+    async def events() -> AsyncIterator[str]:
+        yield _sse({"type": "user", "message": user_out})
+        chunks: list[str] = []
+        try:
+            async for delta in openai_service.chat_completion_stream(
+                messages=llm_messages,
+                temperature=temperature,
+            ):
+                chunks.append(delta)
+                yield _sse({"type": "delta", "text": delta})
+
+            reply = "".join(chunks).strip() or (
+                "I could not generate a reply. Please try again."
+            )
+            async with SessionLocal() as session:
+                live = await _load_chat(session, chat_id_val, admin_id)
+                assistant_msg = AiMessage(
+                    chat_id=live.id,
+                    role="assistant",
+                    content=reply,
+                    image_path="",
+                )
+                session.add(assistant_msg)
+                live.updated_at = datetime.now(UTC)
+                draft_pack_id: str | None = None
+                if make_feed:
+                    admin_row = await session.get(User, admin_id)
+                    if not admin_row:
+                        raise RuntimeError("Admin account not found")
+                    draft_pack_id = await _create_draft_pack_from_chat(
+                        session,
+                        admin=admin_row,
+                        user_message=user_content,
+                        assistant_reply=reply,
+                    )
+                await session.commit()
+                await session.refresh(assistant_msg)
+                chat_out = await _load_chat(session, chat_id_val, admin_id)
+                yield _sse(
+                    {
+                        "type": "done",
+                        "message": AiMessageOut.model_validate(
+                            assistant_msg
+                        ).model_dump(mode="json"),
+                        "draft_pack_id": draft_pack_id,
+                        "chat": AiChatOut.model_validate(chat_out).model_dump(
+                            mode="json"
+                        ),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            yield _sse({"type": "error", "detail": f"CircuitNotion chat error: {exc}"})
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 @router.patch("/chats/{chat_id}/messages/{message_id}", response_model=AiMessageResponse)
 async def edit_message(
     chat_id: str,
@@ -476,14 +586,14 @@ async def generate_chat_image(
     )
 
 
-async def _complete_assistant_turn(
+async def _build_turn_messages(
     db: AsyncSession,
     *,
     chat: AiChat,
     admin: User,
     user_content: str,
     make_feed: bool,
-) -> tuple[AiMessage, str | None]:
+) -> tuple[list[dict[str, str]], float]:
     brief_text = ""
     project_note = ""
     project_name = ""
@@ -533,13 +643,31 @@ async def _complete_assistant_turn(
         for m in chat.messages
         if m.role in ("user", "assistant")
     ][-28:]
-    # Ensure the current user turn is last (already in history if flushed).
     if not history_messages or history_messages[-1].get("content") != user_content:
         history_messages.append({"role": "user", "content": user_content})
 
+    temperature = 0.55 if chat.mode == "personal" else 0.45
+    return [{"role": "system", "content": system}, *history_messages], temperature
+
+
+async def _complete_assistant_turn(
+    db: AsyncSession,
+    *,
+    chat: AiChat,
+    admin: User,
+    user_content: str,
+    make_feed: bool,
+) -> tuple[AiMessage, str | None]:
+    llm_messages, temperature = await _build_turn_messages(
+        db,
+        chat=chat,
+        admin=admin,
+        user_content=user_content,
+        make_feed=make_feed,
+    )
     reply = await openai_service.chat_completion(
-        messages=[{"role": "system", "content": system}, *history_messages],
-        temperature=0.55 if chat.mode == "personal" else 0.45,
+        messages=llm_messages,
+        temperature=temperature,
     )
     if not reply:
         reply = "I could not generate a reply. Please try again."
@@ -585,27 +713,36 @@ def _system_prompt(
         else ""
     )
     feed_note = (
-        "\nThe admin may turn this turn into a draft OER teaching pack for the learner feed. "
+        "\nThis turn may become a draft OER teaching pack for the learner feed. "
         "Keep content clinically safe, educational, and suitable for open educational use."
         if make_feed
         else ""
     )
+    style = (
+        "\nTone: professional educator. Clear structure, precise language, minimal filler. "
+        "Prefer short sections and actionable next steps when planning. "
+        "Use markdown sparingly for headings and lists."
+    )
     if mode == "personal":
         return (
-            "You are the admin's personal AI organization assistant on CircuitNotion "
-            "(not ChatGPT). Help with planning, reflection, curriculum ideas, and "
-            "personal organization tied to their educational work. Be concise and practical. "
+            "You are a professional personal assistant for an educational leader on "
+            "CircuitNotion (not ChatGPT). Support planning, reflection, curriculum ideas, "
+            "and organization tied to their teaching work. Be concise and practical. "
             "When memory is present, recall preferences and unfinished threads explicitly."
+            + style
             + feed_note
             + continuation_block
             + memory_block
         )
 
     parts = [
-        "You are the admin's educational workspace assistant on CircuitNotion for OER Social Learning.",
-        "Help with curriculum planning, teaching content ideas, continuity of prior work, and project notes.",
+        "You are the professional educational workspace assistant for OER Social Learning "
+        "on CircuitNotion.",
+        "Support curriculum planning, teaching content design, continuity of prior work, "
+        "and project notes for clinical educators.",
         "Stay clinically safe; prefer open educational framing; do not invent site-specific protocols.",
         "Use retrieved memory to continue themes already covered and avoid repeating finished packs.",
+        style.strip(),
     ]
     if feed_note:
         parts.append(feed_note)

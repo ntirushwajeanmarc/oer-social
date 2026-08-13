@@ -77,15 +77,35 @@ Instagram requires a **public HTTPS** image URL (`PUBLIC_BASE_URL`), not localho
 
 ## Persistent admin memory
 
-ChatGPT export conversations can be imported as admin memory:
+ChatGPT export conversations can be imported as admin memory (stores history in
+Postgres and indexes embeddings for Space / History search).
+
+### On the VPS
+
+1. Download your ChatGPT data export ZIP from OpenAI (Settings → Data controls).
+2. Copy it onto the server, e.g. `~/exports/chatgpt.zip`.
+3. Use the **same admin email** as `BOOTSTRAP_ADMIN_EMAIL` / your login:
 
 ```bash
+cd ~/oer-social
+
+# Ensure API key + DB are set in backend/.env (CIRCUITNOTION_API_KEY, MEMORY_EMBED_ENABLED=true)
+docker compose up -d db api
+
 docker compose run --rm \
-  -v "/absolute/path/to/export.zip:/import/admin-export.zip:ro" \
+  -v "$HOME/exports/chatgpt.zip:/import/admin-export.zip:ro" \
   api python -m app.scripts.import_admin_memory \
   /import/admin-export.zip \
   --admin-email "your-admin@example.com"
 ```
+
+4. If embeddings were skipped (bad API key), re-run:
+
+```bash
+docker compose run --rm api python -m app.scripts.embed_admin_memory
+```
+
+5. In the app: **Space → History** — search imports and use **Continue** to start a live chat.
 
 The importer is idempotent and supports recovering complete conversation batches
 from a truncated ZIP. It stores only the admin's messages, excludes conversations
