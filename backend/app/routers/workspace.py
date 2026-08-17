@@ -36,6 +36,8 @@ from app.schemas import (
     ContinueImportRequest,
     HistoryItem,
     ImportConversationOut,
+    MessageToFeedRequest,
+    MessageToFeedResponse,
 )
 from app.services import openai_service
 from app.services.admin_memory import build_memory_query, retrieve_admin_memory
@@ -528,6 +530,67 @@ async def delete_message(
     await db.delete(target)
     chat.updated_at = datetime.now(UTC)
     await db.commit()
+
+
+@router.post(
+    "/chats/{chat_id}/messages/{message_id}/to-feed",
+    response_model=MessageToFeedResponse,
+)
+async def message_to_feed(
+    chat_id: str,
+    message_id: str,
+    payload: MessageToFeedRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> MessageToFeedResponse:
+    """Turn an assistant reply into an OER pack for signed-up learners."""
+    chat = await _load_chat(db, chat_id, admin.id)
+    target = next((m for m in chat.messages if m.id == message_id), None)
+    if not target or target.role != "assistant":
+        raise HTTPException(status_code=404, detail="Assistant message not found")
+
+    user_content = ""
+    for msg in reversed(chat.messages):
+        if msg.created_at and target.created_at and msg.created_at > target.created_at:
+            continue
+        if msg.id == target.id:
+            continue
+        if msg.role == "user" and (msg.content or "").strip():
+            user_content = msg.content.strip()
+            break
+    if not user_content:
+        user_content = (target.content or "").strip()[:800] or chat.title or "Teaching pack"
+
+    try:
+        pack_id = await _create_draft_pack_from_chat(
+            db,
+            admin=admin,
+            user_message=user_content,
+            assistant_reply=target.content or "",
+            existing_image_path=target.image_path or "",
+        )
+        pack = await db.get(ContentPack, pack_id)
+        if not pack:
+            raise RuntimeError("Pack was not created")
+        if payload.publish:
+            pack.status = "published"
+            pack.published_at = datetime.now(UTC)
+        await db.commit()
+        await db.refresh(pack)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not create feed pack: {exc}",
+        ) from exc
+
+    return MessageToFeedResponse(
+        pack_id=pack.id,
+        status=pack.status,
+        poster_title=pack.poster_title or pack.topic,
+    )
 
 
 @router.post("/chats/{chat_id}/images", response_model=AiMessageResponse)

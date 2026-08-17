@@ -27,6 +27,7 @@ import {
 } from "@/lib/api";
 
 type Tab = "projects" | "history" | "chat" | "personal";
+const STREAM_PENDING_ID = "stream-pending";
 
 const TABS: { id: Tab; label: string }[] = [
   { id: "chat", label: "Chat" },
@@ -65,6 +66,11 @@ export default function WorkspacePage() {
   const [streamText, setStreamText] = useState("");
   const [creating, setCreating] = useState(false);
   const [draftPackId, setDraftPackId] = useState<string | null>(null);
+  const [feedStatus, setFeedStatus] = useState<"draft" | "published" | null>(
+    null
+  );
+  const [feedTitle, setFeedTitle] = useState("");
+  const [postingFeedId, setPostingFeedId] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [continuingId, setContinuingId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -137,6 +143,43 @@ export default function WorkspacePage() {
 
   function applyChat(chat: AiChat | null | undefined) {
     if (chat) setActiveChat(chat);
+  }
+
+  function upsertStreamMessage(text: string) {
+    setActiveChat((prev) => {
+      if (!prev) return prev;
+      const others = prev.messages.filter((m) => m.id !== STREAM_PENDING_ID);
+      return {
+        ...prev,
+        messages: [
+          ...others,
+          {
+            id: STREAM_PENDING_ID,
+            role: "assistant",
+            content: text,
+            created_at: new Date().toISOString(),
+          },
+        ],
+      };
+    });
+  }
+
+  async function postMessageToFeed(message: AiMessage, publish: boolean) {
+    if (!activeChat || message.id.startsWith("stream-")) return;
+    setError("");
+    setPostingFeedId(message.id);
+    try {
+      const res = await api.workspaceMessageToFeed(activeChat.id, message.id, {
+        publish,
+      });
+      setDraftPackId(res.pack_id);
+      setFeedStatus(res.status === "published" ? "published" : "draft");
+      setFeedTitle(res.poster_title);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not post to feed");
+    } finally {
+      setPostingFeedId(null);
+    }
   }
 
   function switchTab(next: Tab) {
@@ -371,6 +414,8 @@ export default function WorkspacePage() {
     setSending(true);
     setError("");
     setDraftPackId(null);
+    setFeedStatus(null);
+    setFeedTitle("");
     setStreamText("");
     const content = draft.trim();
     setDraft("");
@@ -387,6 +432,7 @@ export default function WorkspacePage() {
         }
         if (res.draft_pack_id) {
           setDraftPackId(res.draft_pack_id);
+          setFeedStatus("draft");
           setMakeFeed(false);
         }
       } else {
@@ -398,19 +444,20 @@ export default function WorkspacePage() {
 
         const mergeAssistant = (message: AiMessage, chat?: AiChat | null) => {
           if (chat?.messages?.length) {
-            setActiveChat(chat);
+            setActiveChat({
+              ...chat,
+              messages: chat.messages.filter((m) => m.id !== STREAM_PENDING_ID),
+            });
             return;
           }
           setActiveChat((prev) => {
             if (!prev) return prev;
-            const withoutDup = prev.messages.filter((m) => m.id !== message.id);
-            // Drop any optimistic streaming placeholder
-            const withoutTemp = withoutDup.filter(
-              (m) => !m.id.startsWith("stream-")
+            const withoutDup = prev.messages.filter(
+              (m) => m.id !== message.id && m.id !== STREAM_PENDING_ID
             );
             return {
               ...prev,
-              messages: [...withoutTemp, message],
+              messages: [...withoutDup, message],
             };
           });
         };
@@ -437,18 +484,20 @@ export default function WorkspacePage() {
             onDelta: (text) => {
               localStream += text;
               setStreamText(localStream);
+              upsertStreamMessage(localStream);
             },
             onDone: (res) => {
               finished = true;
-              // Keep stream text visible until chat state includes the reply.
               mergeAssistant(res.message, res.chat);
               if (res.draft_pack_id) {
                 setDraftPackId(res.draft_pack_id);
+                setFeedStatus("draft");
                 setMakeFeed(false);
               }
             },
             onFeed: (draftPackId) => {
               setDraftPackId(draftPackId);
+              setFeedStatus("draft");
               setMakeFeed(false);
             },
             onError: (detail) => {
@@ -458,10 +507,8 @@ export default function WorkspacePage() {
           }
         );
 
-        // Always reconcile from the server so a dropped "done" event cannot
-        // wipe a reply that was already shown while streaming.
         let reconciled: AiChat | null = null;
-        for (let attempt = 0; attempt < 6; attempt++) {
+        for (let attempt = 0; attempt < 12; attempt++) {
           try {
             reconciled = await api.getWorkspaceChat(chatId);
             const visible = reconciled.messages.filter(
@@ -469,29 +516,40 @@ export default function WorkspacePage() {
             );
             const last = visible[visible.length - 1];
             if (last?.role === "assistant" && last.content.trim()) break;
-            if (finished && !localStream) break;
           } catch {
             /* retry */
           }
-          await new Promise((r) => setTimeout(r, 250));
+          await new Promise((r) => setTimeout(r, 300));
         }
 
         if (reconciled) {
-          setActiveChat(reconciled);
+          setActiveChat({
+            ...reconciled,
+            messages: reconciled.messages.filter(
+              (m) => m.id !== STREAM_PENDING_ID
+            ),
+          });
         } else if (localStream.trim()) {
-          // Last resort: keep what the user already saw.
           setActiveChat((prev) => {
             if (!prev) return prev;
             const already = prev.messages.some(
-              (m) => m.role === "assistant" && m.content === localStream
+              (m) =>
+                m.role === "assistant" &&
+                m.id !== STREAM_PENDING_ID &&
+                m.content === localStream
             );
-            if (already) return prev;
+            if (already) {
+              return {
+                ...prev,
+                messages: prev.messages.filter((m) => m.id !== STREAM_PENDING_ID),
+              };
+            }
             return {
               ...prev,
               messages: [
-                ...prev.messages.filter((m) => !m.id.startsWith("stream-")),
+                ...prev.messages.filter((m) => m.id !== STREAM_PENDING_ID),
                 {
-                  id: `stream-${Date.now()}`,
+                  id: `local-${Date.now()}`,
                   role: "assistant",
                   content: localStream,
                   created_at: new Date().toISOString(),
@@ -695,15 +753,45 @@ export default function WorkspacePage() {
           ) : null}
 
           {draftPackId ? (
-            <p className="mx-3 mt-3 rounded-lg border border-fjord/10 bg-ice/70 px-3 py-2 text-sm text-fjord sm:mx-5">
-              Draft pack ready —{" "}
-              <Link
-                href={`/packs/${draftPackId}`}
-                className="font-medium underline underline-offset-4"
-              >
-                review before publish
-              </Link>
-            </p>
+            <div className="mx-3 mt-3 rounded-lg border border-fjord/10 bg-ice/70 px-3 py-2.5 text-sm text-fjord sm:mx-5">
+              {feedStatus === "published" ? (
+                <p>
+                  Published to the learner feed
+                  {feedTitle ? ` — ${feedTitle}` : ""}.{" "}
+                  <Link
+                    href="/feed"
+                    className="font-medium underline underline-offset-4"
+                  >
+                    Open feed
+                  </Link>
+                  {" · "}
+                  <Link
+                    href={`/packs/${draftPackId}`}
+                    className="font-medium underline underline-offset-4"
+                  >
+                    Review pack
+                  </Link>
+                </p>
+              ) : (
+                <p>
+                  Draft pack ready for signed-up learners
+                  {feedTitle ? ` — ${feedTitle}` : ""}.{" "}
+                  <Link
+                    href={`/packs/${draftPackId}`}
+                    className="font-medium underline underline-offset-4"
+                  >
+                    Review
+                  </Link>
+                  {" · "}
+                  <Link
+                    href="/admin"
+                    className="font-medium underline underline-offset-4"
+                  >
+                    Publish from Create
+                  </Link>
+                </p>
+              )}
+            </div>
           ) : null}
 
           {tab === "projects" ? (
@@ -1001,7 +1089,15 @@ export default function WorkspacePage() {
                                       {m.content}
                                     </p>
                                   ) : (
-                                    <Markdown content={m.content} />
+                                    <>
+                                      <Markdown content={m.content} />
+                                      {m.id === STREAM_PENDING_ID ? (
+                                        <span
+                                          className="chat-stream-caret"
+                                          aria-hidden
+                                        />
+                                      ) : null}
+                                    </>
                                   )}
                                   {img ? (
                                     // eslint-disable-next-line @next/next/no-img-element
@@ -1013,8 +1109,10 @@ export default function WorkspacePage() {
                                   ) : null}
                                 </div>
                                 <div
-                                  className={`mt-1.5 flex flex-wrap gap-1 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 ${
-                                    isUser ? "justify-end" : ""
+                                  className={`mt-1.5 flex flex-wrap gap-1 ${
+                                    isUser
+                                      ? "justify-end opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100"
+                                      : "opacity-100"
                                   }`}
                                 >
                                   <button
@@ -1032,6 +1130,41 @@ export default function WorkspacePage() {
                                     >
                                       Edit
                                     </button>
+                                  ) : m.id !== STREAM_PENDING_ID &&
+                                    !m.id.startsWith("local-") ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        disabled={postingFeedId === m.id}
+                                        onClick={() =>
+                                          postMessageToFeed(m, false)
+                                        }
+                                        className="rounded px-2 py-1 text-[11px] font-medium text-mist hover:bg-ice/60 hover:text-fjord"
+                                      >
+                                        {postingFeedId === m.id
+                                          ? "Preparing…"
+                                          : "Save feed draft"}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        disabled={postingFeedId === m.id}
+                                        onClick={() => {
+                                          if (
+                                            !window.confirm(
+                                              "Publish this as an OER pack to everyone who has signed up?"
+                                            )
+                                          ) {
+                                            return;
+                                          }
+                                          void postMessageToFeed(m, true);
+                                        }}
+                                        className="rounded px-2 py-1 text-[11px] font-semibold text-fjord hover:bg-ice/80"
+                                      >
+                                        {postingFeedId === m.id
+                                          ? "Publishing…"
+                                          : "Post to learner feed"}
+                                      </button>
+                                    </>
                                   ) : null}
                                   {img ? (
                                     <a
@@ -1042,14 +1175,17 @@ export default function WorkspacePage() {
                                       Download
                                     </a>
                                   ) : null}
-                                  <button
-                                    type="button"
-                                    disabled={busyMsgId === m.id}
-                                    onClick={() => deleteMessage(m)}
-                                    className="rounded px-2 py-1 text-[11px] font-medium text-mist hover:bg-red-50 hover:text-red-700"
-                                  >
-                                    Delete
-                                  </button>
+                                  {m.id !== STREAM_PENDING_ID &&
+                                  !m.id.startsWith("local-") ? (
+                                    <button
+                                      type="button"
+                                      disabled={busyMsgId === m.id}
+                                      onClick={() => deleteMessage(m)}
+                                      className="rounded px-2 py-1 text-[11px] font-medium text-mist hover:bg-red-50 hover:text-red-700"
+                                    >
+                                      Delete
+                                    </button>
+                                  ) : null}
                                 </div>
                               </>
                             )}
@@ -1072,34 +1208,20 @@ export default function WorkspacePage() {
                     ) : null}
                     {streaming &&
                     !visibleMessages.some(
-                      (m) =>
-                        m.role === "assistant" &&
-                        streamText &&
-                        (m.content === streamText ||
-                          m.content.startsWith(streamText.slice(0, 48)) ||
-                          streamText.startsWith(m.content.slice(0, 48)))
+                      (m) => m.id === STREAM_PENDING_ID
                     ) ? (
                       <div className="chat-message-row mb-6 flex gap-3 sm:gap-3.5">
                         <div className="chat-avatar chat-avatar-ai" aria-hidden>
                           AI
                         </div>
-                        <div className="min-w-0 max-w-[min(100%,40rem)] flex-1">
+                        <div className="min-w-0 flex-1">
                           <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-mist">
                             Assistant
                           </p>
-                          <div className="chat-assistant-bubble text-[0.95rem] leading-relaxed text-ink/88">
-                            {streamText ? (
-                              <>
-                                <Markdown content={streamText} />
-                                <span className="chat-stream-caret" aria-hidden />
-                              </>
-                            ) : (
-                              <p className="text-sm text-mist">
-                                Composing response
-                                <span className="chat-stream-dots" aria-hidden />
-                              </p>
-                            )}
-                          </div>
+                          <p className="text-sm text-mist">
+                            Composing response
+                            <span className="chat-stream-dots" aria-hidden />
+                          </p>
                         </div>
                       </div>
                     ) : null}
@@ -1125,7 +1247,7 @@ export default function WorkspacePage() {
                         onChange={(e) => setMakeFeed(e.target.checked)}
                         className="size-3.5 accent-fjord"
                       />
-                      Make this a feed draft
+                      Make this a feed draft while generating
                     </label>
                     <label className="flex items-center gap-2">
                       <input
@@ -1190,8 +1312,8 @@ export default function WorkspacePage() {
                     </button>
                   </div>
                   <p className="px-1 text-center text-[10px] text-mist">
-                    Enter to send · Responses stream live · Feed drafts stay
-                    unpublished until you review
+                    After a reply, use Post to learner feed to share with
+                    everyone who signed up
                   </p>
                 </form>
               </div>

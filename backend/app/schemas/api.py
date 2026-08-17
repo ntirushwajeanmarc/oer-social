@@ -234,6 +234,16 @@ class AiMessageResponse(BaseModel):
     chat: AiChatOut | None = None
 
 
+class MessageToFeedRequest(BaseModel):
+    publish: bool = False
+
+
+class MessageToFeedResponse(BaseModel):
+    pack_id: str
+    status: str
+    poster_title: str = ""
+
+
 class HistoryItem(BaseModel):
     id: str
     title: str

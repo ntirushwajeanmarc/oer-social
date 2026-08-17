@@ -9,6 +9,8 @@ from app.schemas.api import (
     AiMessageOut,
     AiMessageResponse,
     AiMessageUpdate,
+    MessageToFeedRequest,
+    MessageToFeedResponse,
     AiProjectCreate,
     AiProjectOut,
     AnswerRequest,
@@ -54,6 +56,8 @@ __all__ = [
     "AiMessageOut",
     "AiMessageResponse",
     "AiMessageUpdate",
+    "MessageToFeedRequest",
+    "MessageToFeedResponse",
     "HistoryItem",
     "ImportConversationOut",
 ]

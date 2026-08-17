@@ -172,6 +172,12 @@ export type AiMessageResponse = {
   chat?: AiChat | null;
 };
 
+export type MessageToFeedResponse = {
+  pack_id: string;
+  status: string;
+  poster_title: string;
+};
+
 function authHeaders(): HeadersInit {
   if (typeof window === "undefined") return {};
   const token = localStorage.getItem(TOKEN_KEY);
@@ -465,6 +471,18 @@ export const api = {
     request<void>(`/workspace/chats/${chatId}/messages/${messageId}`, {
       method: "DELETE",
     }),
+  workspaceMessageToFeed: (
+    chatId: string,
+    messageId: string,
+    body?: { publish?: boolean }
+  ) =>
+    request<MessageToFeedResponse>(
+      `/workspace/chats/${chatId}/messages/${messageId}/to-feed`,
+      {
+        method: "POST",
+        body: JSON.stringify({ publish: body?.publish ?? false }),
+      }
+    ),
   generateWorkspaceImage: (
     chatId: string,
     body: {
