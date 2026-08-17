@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import base64
+import json
 import logging
 import re
+import struct
 
 from app.config import settings
 from app.services.openai_service import get_client
@@ -57,6 +60,46 @@ def chunk_text(
     return chunks[:cap]
 
 
+def coerce_embedding(raw: object) -> list[float]:
+    """Normalize CircuitNotion/OpenAI embedding payloads to float32 lists.
+
+    Some routes return a JSON array; others return a base64 float32 buffer
+    (string often starts with 'A'), which must not be iterated as characters.
+    """
+    if raw is None:
+        raise RuntimeError("Embedding API returned an empty vector")
+
+    if isinstance(raw, dict):
+        raw = raw.get("embedding") or raw.get("vector") or raw.get("data")
+
+    if isinstance(raw, str):
+        text = raw.strip()
+        if not text:
+            raise RuntimeError("Embedding API returned an empty vector")
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [float(x) for x in parsed]
+        if isinstance(parsed, str):
+            text = parsed
+        buf = base64.b64decode(text, validate=False)
+        if len(buf) < 16 or len(buf) % 4:
+            raise RuntimeError("Embedding API returned a non-numeric vector")
+        count = len(buf) // 4
+        return list(struct.unpack("<" + "f" * count, buf[: count * 4]))
+
+    if isinstance(raw, (bytes, bytearray)):
+        buf = bytes(raw)
+        if len(buf) < 16 or len(buf) % 4:
+            raise RuntimeError("Embedding API returned a non-numeric vector")
+        count = len(buf) // 4
+        return list(struct.unpack("<" + "f" * count, buf[: count * 4]))
+
+    return [float(x) for x in list(raw)]  # type: ignore[arg-type]
+
+
 async def embed_texts(texts: list[str]) -> list[list[float]]:
     """Create embeddings via CircuitNotion OpenAI-compatible API."""
     cleaned = [t.strip() for t in texts if t and t.strip()]
@@ -76,16 +119,7 @@ async def embed_texts(texts: list[str]) -> list[list[float]]:
         # API may return out of order; sort by index
         ordered = sorted(result.data, key=lambda d: d.index)
         for item in ordered:
-            raw = item.embedding
-            if isinstance(raw, str):
-                # Some proxies return a JSON string; parse if possible.
-                import json
-
-                try:
-                    raw = json.loads(raw)
-                except json.JSONDecodeError as exc:
-                    raise RuntimeError("Embedding API returned a non-numeric vector") from exc
-            vec = [float(x) for x in list(raw)]
+            vec = coerce_embedding(item.embedding)
             if settings.openai_embedding_dims and len(vec) != settings.openai_embedding_dims:
                 logger.warning(
                     "Embedding dim mismatch: got %s expected %s",
