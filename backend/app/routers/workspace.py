@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -663,6 +664,124 @@ async def generate_chat_image(
         message=AiMessageOut.model_validate(assistant_msg),
         draft_pack_id=draft_pack_id,
         chat=AiChatOut.model_validate(await _load_chat(db, chat.id, admin.id)),
+    )
+
+
+@router.post("/chats/{chat_id}/images/stream")
+async def generate_chat_image_stream(
+    chat_id: str,
+    payload: AiImageCreate,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """Generate an image with SSE keepalives so Cloudflare does not 502."""
+    chat = await _load_chat(db, chat_id, admin.id)
+    prompt = payload.prompt.strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+
+    user_msg = AiMessage(
+        chat_id=chat.id,
+        role="user",
+        content=f"Generate image: {prompt}",
+        image_path="",
+    )
+    db.add(user_msg)
+    if chat.title in ("New chat", "Personal chat") or not chat.title:
+        chat.title = f"Image: {prompt[:60]}".strip()
+    await db.commit()
+    await db.refresh(user_msg)
+
+    user_out = AiMessageOut.model_validate(user_msg).model_dump(mode="json")
+    chat_id_val = chat.id
+    admin_id = admin.id
+    make_feed = payload.make_feed
+    style = payload.style
+
+    async def events() -> AsyncIterator[str]:
+        yield _sse({"type": "user", "message": user_out})
+        yield _sse({"type": "status", "text": "Generating image…"})
+        try:
+            gen_task = asyncio.create_task(
+                openai_service.generate_image(
+                    prompt=prompt,
+                    filename_stem=chat_id_val,
+                    subdir="chat",
+                    educational_poster=style == "poster",
+                    title=prompt[:120],
+                )
+            )
+            while not gen_task.done():
+                done, _ = await asyncio.wait({gen_task}, timeout=8.0)
+                if not done:
+                    yield ": keepalive\n\n"
+                    yield _sse({"type": "status", "text": "Still generating…"})
+            image_path = await gen_task
+
+            async with SessionLocal() as session:
+                live = await _load_chat(session, chat_id_val, admin_id)
+                assistant_msg = AiMessage(
+                    chat_id=live.id,
+                    role="assistant",
+                    content=f"Here’s an image for: **{prompt}**",
+                    image_path=image_path,
+                )
+                session.add(assistant_msg)
+                live.updated_at = datetime.now(UTC)
+                await session.commit()
+                await session.refresh(assistant_msg)
+                chat_out = await _load_chat(session, chat_id_val, admin_id)
+                yield _sse(
+                    {
+                        "type": "done",
+                        "message": AiMessageOut.model_validate(
+                            assistant_msg
+                        ).model_dump(mode="json"),
+                        "draft_pack_id": None,
+                        "chat": AiChatOut.model_validate(chat_out).model_dump(
+                            mode="json"
+                        ),
+                    }
+                )
+
+            if make_feed:
+                yield _sse({"type": "status", "text": "Preparing feed pack…"})
+                try:
+                    async with SessionLocal() as session:
+                        admin_row = await session.get(User, admin_id)
+                        if not admin_row:
+                            raise RuntimeError("Admin account not found")
+                        draft_pack_id = await _create_draft_pack_from_chat(
+                            session,
+                            admin=admin_row,
+                            user_message=prompt,
+                            assistant_reply=f"Teaching visual for: {prompt}",
+                            existing_image_path=image_path,
+                        )
+                        await session.commit()
+                    yield _sse({"type": "feed", "draft_pack_id": draft_pack_id})
+                except Exception as feed_exc:  # noqa: BLE001
+                    yield _sse(
+                        {
+                            "type": "feed_error",
+                            "detail": (
+                                f"Image saved, but draft feed pack failed: {feed_exc}"
+                            ),
+                        }
+                    )
+        except Exception as exc:  # noqa: BLE001
+            yield _sse(
+                {"type": "error", "detail": f"Image generation failed: {exc}"}
+            )
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

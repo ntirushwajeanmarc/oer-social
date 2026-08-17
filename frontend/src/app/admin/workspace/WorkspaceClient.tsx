@@ -421,20 +421,74 @@ export default function WorkspacePage() {
     setDraft("");
     try {
       if (imageMode) {
-        const res = await api.generateWorkspaceImage(activeChat.id, {
-          prompt: content,
-          make_feed: makeFeed,
-          style: imageStyle,
-        });
-        applyChat(res.chat);
-        if (!res.chat) {
-          setActiveChat(await api.getWorkspaceChat(activeChat.id));
+        const chatId = activeChat.id;
+        setStreaming(true);
+        let finished = false;
+        let streamError = "";
+        await api.streamWorkspaceImage(
+          chatId,
+          {
+            prompt: content,
+            make_feed: makeFeed,
+            style: imageStyle,
+          },
+          {
+            onUser: (message) => {
+              setActiveChat((prev) => {
+                if (!prev) return prev;
+                const withoutDup = prev.messages.filter((m) => m.id !== message.id);
+                return {
+                  ...prev,
+                  title:
+                    prev.title === "New chat" || prev.title === "Personal chat"
+                      ? `Image: ${content.slice(0, 60)}`
+                      : prev.title,
+                  messages: [...withoutDup, message],
+                };
+              });
+            },
+            onStatus: (text) => {
+              upsertStreamMessage(text);
+            },
+            onDone: (res) => {
+              finished = true;
+              if (res.chat?.messages?.length) {
+                applyChat(res.chat);
+              } else {
+                setActiveChat((prev) => {
+                  if (!prev) return prev;
+                  const withoutTemp = prev.messages.filter(
+                    (m) => m.id !== STREAM_PENDING_ID && m.id !== res.message.id
+                  );
+                  return { ...prev, messages: [...withoutTemp, res.message] };
+                });
+              }
+              if (res.draft_pack_id) {
+                setDraftPackId(res.draft_pack_id);
+                setFeedStatus("draft");
+                setMakeFeed(false);
+              }
+            },
+            onFeed: (draftPackId) => {
+              setDraftPackId(draftPackId);
+              setFeedStatus("draft");
+              setMakeFeed(false);
+            },
+            onError: (detail) => {
+              streamError = detail;
+              setError(detail);
+            },
+          }
+        );
+        if (!finished) {
+          try {
+            setActiveChat(await api.getWorkspaceChat(chatId));
+          } catch {
+            /* ignore */
+          }
+          if (streamError) throw new Error(streamError);
         }
-        if (res.draft_pack_id) {
-          setDraftPackId(res.draft_pack_id);
-          setFeedStatus("draft");
-          setMakeFeed(false);
-        }
+        setStreaming(false);
       } else {
         const chatId = activeChat.id;
         setStreaming(true);

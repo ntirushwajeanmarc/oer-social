@@ -187,6 +187,13 @@ function authHeaders(): HeadersInit {
 async function parseErrorMessage(text: string, statusText: string): Promise<string> {
   const trimmed = text.trim();
   if (!trimmed) return statusText;
+  if (
+    /<!DOCTYPE html/i.test(trimmed) ||
+    /Error code 502/i.test(trimmed) ||
+    /Bad gateway/i.test(trimmed)
+  ) {
+    return "The request timed out (Cloudflare 502). Image generation can take a minute — please try again.";
+  }
   try {
     const data = JSON.parse(trimmed) as { detail?: unknown; message?: unknown };
     if (typeof data.detail === "string") return data.detail;
@@ -194,7 +201,7 @@ async function parseErrorMessage(text: string, statusText: string): Promise<stri
     if (typeof data.message === "string") return data.message;
     return trimmed;
   } catch {
-    return trimmed;
+    return trimmed.slice(0, 280);
   }
 }
 
@@ -495,4 +502,97 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  streamWorkspaceImage: async (
+    chatId: string,
+    body: {
+      prompt: string;
+      make_feed?: boolean;
+      style?: "poster" | "general";
+    },
+    handlers: {
+      onUser?: (message: AiMessage) => void;
+      onStatus?: (text: string) => void;
+      onDone?: (payload: AiMessageResponse) => void;
+      onFeed?: (draftPackId: string) => void;
+      onError?: (detail: string) => void;
+    }
+  ) => {
+    const res = await fetch(`${API_URL}/workspace/chats/${chatId}/images/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream",
+        ...authHeaders(),
+      },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      const message = await parseErrorMessage(text, res.statusText);
+      if (res.status === 401 && typeof window !== "undefined") {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+      }
+      throw new Error(message || res.statusText);
+    }
+    if (!res.body) {
+      throw new Error("Streaming is not supported in this browser");
+    }
+    const dispatch = (part: string) => {
+      const line = part
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.startsWith("data:"));
+      if (!line) return;
+      const raw = line.slice(5).trim();
+      if (!raw) return;
+      let event: {
+        type?: string;
+        message?: AiMessage;
+        text?: string;
+        detail?: string;
+        draft_pack_id?: string | null;
+        chat?: AiChat | null;
+      };
+      try {
+        event = JSON.parse(raw) as typeof event;
+      } catch {
+        return;
+      }
+      if (event.type === "user" && event.message) {
+        handlers.onUser?.(event.message);
+      } else if (event.type === "status" && event.text) {
+        handlers.onStatus?.(event.text);
+      } else if (event.type === "done" && event.message) {
+        handlers.onDone?.({
+          message: event.message,
+          draft_pack_id: event.draft_pack_id ?? null,
+          chat: event.chat ?? null,
+        });
+      } else if (event.type === "feed" && event.draft_pack_id) {
+        handlers.onFeed?.(event.draft_pack_id);
+      } else if (event.type === "feed_error" || event.type === "error") {
+        handlers.onError?.(event.detail || "Image generation failed");
+      }
+    };
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: true });
+      }
+      const parts = buffer.split("\n\n");
+      buffer = done ? "" : (parts.pop() ?? "");
+      for (const part of parts) {
+        if (part.trim()) dispatch(part);
+      }
+      if (done && buffer.trim()) {
+        dispatch(buffer);
+        buffer = "";
+      }
+      if (done) break;
+    }
+  },
 };

@@ -55,7 +55,14 @@ services:
     profiles: ["tunnel"]
     image: cloudflare/cloudflared:latest
     restart: unless-stopped
-    command: tunnel --no-autoupdate run
+    command:
+      - tunnel
+      - --no-autoupdate
+      - --proxy-connect-timeout
+      - 60s
+      - --proxy-keep-alive-timeout
+      - 90s
+      - run
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
