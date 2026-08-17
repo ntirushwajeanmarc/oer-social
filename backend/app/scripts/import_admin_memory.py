@@ -269,14 +269,7 @@ async def import_archive(path: Path, admin_email: str) -> None:
             f"projects={len(project_map)}; "
             f"skipped private={skipped_private}, empty={skipped_empty}."
         )
-
-    try:
-        from app.services.memory_index import backfill_memory_embeddings
-
-        stats = await backfill_memory_embeddings(batch_conversations=6)
-        print(f"Embedding backfill: {stats}")
-    except Exception as exc:  # noqa: BLE001
-        print(f"Embedding backfill skipped/failed: {exc}")
+        print("Embeddings skipped — conversations are stored in the database only.")
 
 
 def main() -> None:

@@ -1,6 +1,5 @@
 from contextlib import asynccontextmanager
 from pathlib import Path
-import asyncio
 import logging
 
 from fastapi import FastAPI
@@ -148,19 +147,6 @@ async def lifespan(_: FastAPI):
     await ensure_schema()
     await bootstrap_admin()
     await bootstrap_program_brief()
-
-    async def _embed_backfill() -> None:
-        if not settings.memory_embed_enabled:
-            return
-        try:
-            from app.services.memory_index import backfill_memory_embeddings
-
-            stats = await backfill_memory_embeddings(batch_conversations=6)
-            logger.info("Admin memory embedding backfill: %s", stats)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Admin memory embedding backfill failed: %s", exc)
-
-    asyncio.create_task(_embed_backfill())
     yield
 
 

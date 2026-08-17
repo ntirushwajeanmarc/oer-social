@@ -78,7 +78,7 @@ Instagram requires a **public HTTPS** image URL (`PUBLIC_BASE_URL`), not localho
 ## Persistent admin memory
 
 ChatGPT export conversations can be imported as admin memory (stores history in
-Postgres and indexes embeddings for Space / History search).
+Postgres). Vector embeddings are optional and off during import for now.
 
 ### On the VPS
 
@@ -89,7 +89,6 @@ Postgres and indexes embeddings for Space / History search).
 ```bash
 cd ~/oer-social
 
-# Ensure API key + DB are set in backend/.env (CIRCUITNOTION_API_KEY, MEMORY_EMBED_ENABLED=true)
 docker compose up -d db api
 
 docker compose run --rm \
@@ -99,17 +98,12 @@ docker compose run --rm \
   --admin-email "your-admin@example.com"
 ```
 
-4. If embeddings were skipped (bad API key), re-run:
+4. In the app: **Space → History** — search imports and use **Continue** to start a live chat.
+   Embeddings are not run at import time; full-text search and Continue still work.
 
-```bash
-docker compose run --rm api python -m app.scripts.embed_admin_memory
-```
-
-5. In the app: **Space → History** — search imports and use **Continue** to start a live chat.
-
-The importer stores **full threads** (your messages and GPT replies), recovers
-truncated ZIP batches when possible, and indexes them for search. Click
-**Continue** in History to open the original back-and-forth in Space.
+The importer stores **full threads** (your messages and GPT replies) and recovers
+truncated ZIP batches when possible. Click **Continue** in History to open the
+original back-and-forth in Space.
 
 **ChatGPT Projects** are imported into **Space → Projects** (name, instructions,
 and which conversations belong together). Re-run the same import after pulling
