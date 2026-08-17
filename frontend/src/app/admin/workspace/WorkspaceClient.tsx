@@ -52,6 +52,7 @@ export default function WorkspacePage() {
 
   const [historyQ, setHistoryQ] = useState("");
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [historyProjectId, setHistoryProjectId] = useState("");
   const [importView, setImportView] = useState<ImportConversation | null>(null);
 
   const [workChats, setWorkChats] = useState<AiChatListItem[]>([]);
@@ -85,9 +86,9 @@ export default function WorkspacePage() {
     setProjects(await api.workspaceProjects());
   }, []);
 
-  const loadHistory = useCallback(async (q = "") => {
-    setHistory(await api.workspaceHistory(q));
-  }, []);
+  const loadHistory = useCallback(async (q = "", projectId = historyProjectId) => {
+    setHistory(await api.workspaceHistory(q, projectId || undefined));
+  }, [historyProjectId]);
 
   const loadChats = useCallback(async () => {
     const [work, personal] = await Promise.all([
@@ -113,9 +114,22 @@ export default function WorkspacePage() {
     );
   }, [router, loadProjects, loadHistory, loadChats]);
 
-  const chatList = useMemo(
-    () => (tab === "personal" ? personalChats : workChats),
-    [tab, personalChats, workChats]
+  const chatList = useMemo(() => {
+    const rows = tab === "personal" ? personalChats : workChats;
+    if (tab === "chat" && selectedProjectId) {
+      return rows.filter((c) => c.project_id === selectedProjectId);
+    }
+    return rows;
+  }, [tab, personalChats, workChats, selectedProjectId]);
+
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  );
+
+  const historyProject = useMemo(
+    () => projects.find((p) => p.id === historyProjectId) ?? null,
+    [projects, historyProjectId]
   );
 
   const visibleMessages = useMemo(
@@ -221,6 +235,20 @@ export default function WorkspacePage() {
     }
   }
 
+  async function openProject(projectId: string, next: Tab = "chat") {
+    setSelectedProjectId(projectId);
+    if (next === "history") {
+      setHistoryProjectId(projectId);
+      setImportView(null);
+      try {
+        await loadHistory(historyQ, projectId);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not load project history");
+      }
+    }
+    switchTab(next);
+  }
+
   async function onSearchHistory(e: FormEvent) {
     e.preventDefault();
     setError("");
@@ -269,6 +297,7 @@ export default function WorkspacePage() {
       });
       setImportView(null);
       setActiveChat(chat);
+      if (chat.project_id) setSelectedProjectId(chat.project_id);
       setTab(mode === "personal" ? "personal" : "chat");
       setSidebarOpen(false);
       await loadChats();
@@ -717,6 +746,9 @@ export default function WorkspacePage() {
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
+                        {p.import_count
+                          ? ` (${p.import_count} imported)`
+                          : ""}
                       </option>
                     ))}
                   </select>
@@ -724,12 +756,18 @@ export default function WorkspacePage() {
               ) : null}
 
               <p className="mb-2 px-1 text-[11px] leading-relaxed text-ink/40">
-                Chat · images · feed drafts · edit/copy/delete
+                {selectedProject
+                  ? `${selectedProject.name} · live chats in this project`
+                  : "Chat · images · feed drafts · edit/copy/delete"}
               </p>
 
               <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto">
                 {chatList.length === 0 ? (
-                  <li className="px-2 py-4 text-xs text-ink/35">No chats yet</li>
+                  <li className="px-2 py-4 text-xs text-ink/35">
+                    {selectedProject
+                      ? "No live chats in this project yet. Open it from Projects to Continue imported threads."
+                      : "No chats yet"}
+                  </li>
                 ) : (
                   chatList.map((c) => (
                     <li key={c.id} className="group flex items-center gap-1">
@@ -752,7 +790,7 @@ export default function WorkspacePage() {
           ) : (
             <div className="px-3 py-2 text-xs leading-relaxed text-ink/45">
               {tab === "projects"
-                ? "Organize workstreams for curriculum and packs."
+                ? "Imported ChatGPT projects appear here after you re-run the memory import."
                 : "Search imported history — Continue to pick up a thread."}
             </div>
           )}
@@ -874,7 +912,8 @@ export default function WorkspacePage() {
                 <ul className="divide-y divide-[var(--line)]">
                   {projects.length === 0 ? (
                     <li className="py-8 text-center text-sm text-ink/40">
-                      No projects yet.
+                      No projects yet. Re-import the ChatGPT ZIP to restore
+                      ChatGPT Projects, or add one here.
                     </li>
                   ) : (
                     projects.map((p) => (
@@ -884,22 +923,35 @@ export default function WorkspacePage() {
                       >
                         <div>
                           <p className="font-medium text-fjord">{p.name}</p>
+                          <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-mist">
+                            {p.source_project_id ? "Imported from ChatGPT" : "Space project"}
+                            {p.import_count ? ` · ${p.import_count} conversations` : ""}
+                            {p.chat_count ? ` · ${p.chat_count} live chats` : ""}
+                          </p>
                           {p.description ? (
-                            <p className="mt-1 text-sm text-ink/55">
+                            <p className="mt-1 line-clamp-3 text-sm text-ink/55">
                               {p.description}
                             </p>
                           ) : null}
                         </div>
-                        <button
-                          type="button"
-                          className="shrink-0 text-xs font-medium text-glacier underline underline-offset-4"
-                          onClick={() => {
-                            setSelectedProjectId(p.id);
-                            switchTab("chat");
-                          }}
-                        >
-                          Open chat
-                        </button>
+                        <div className="flex shrink-0 flex-col items-end gap-2">
+                          <button
+                            type="button"
+                            className="text-xs font-medium text-glacier underline underline-offset-4"
+                            onClick={() => openProject(p.id, "chat")}
+                          >
+                            Open chat
+                          </button>
+                          {(p.import_count || 0) > 0 ? (
+                            <button
+                              type="button"
+                              className="text-xs font-medium text-glacier underline underline-offset-4"
+                              onClick={() => openProject(p.id, "history")}
+                            >
+                              View conversations
+                            </button>
+                          ) : null}
+                        </div>
                       </li>
                     ))
                   )}
@@ -922,6 +974,29 @@ export default function WorkspacePage() {
                     Search
                   </button>
                 </form>
+                {historyProject ? (
+                  <div className="flex items-center justify-between gap-3 rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm">
+                    <p className="text-fjord">
+                      Showing <span className="font-medium">{historyProject.name}</span>
+                    </p>
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-glacier underline underline-offset-4"
+                      onClick={async () => {
+                        setHistoryProjectId("");
+                        try {
+                          await loadHistory(historyQ, "");
+                        } catch (err) {
+                          setError(
+                            err instanceof Error ? err.message : "History search failed"
+                          );
+                        }
+                      }}
+                    >
+                      Clear filter
+                    </button>
+                  </div>
+                ) : null}
 
                 {importView ? (
                   <div className="panel space-y-3 p-5">
@@ -929,6 +1004,9 @@ export default function WorkspacePage() {
                       <div>
                         <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-mist">
                           Imported
+                          {importView.project_name
+                            ? ` · ${importView.project_name}`
+                            : ""}
                         </p>
                         <h2 className="font-display text-xl text-fjord">
                           {importView.title || "Conversation"}
@@ -989,6 +1067,7 @@ export default function WorkspacePage() {
                           <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-mist">
                             {item.source}
                             {item.mode ? ` · ${item.mode}` : ""}
+                            {item.project_name ? ` · ${item.project_name}` : ""}
                           </span>
                           <span className="mt-0.5 block text-sm font-medium text-fjord">
                             {item.title}

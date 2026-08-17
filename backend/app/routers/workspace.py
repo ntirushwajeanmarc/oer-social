@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -53,13 +53,42 @@ router = APIRouter(prefix="/workspace", tags=["workspace"])
 async def list_projects(
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
-) -> list[AiProject]:
+) -> list[AiProjectOut]:
     result = await db.execute(
         select(AiProject)
         .where(AiProject.admin_id == admin.id)
         .order_by(AiProject.updated_at.desc())
     )
-    return list(result.scalars().all())
+    projects = list(result.scalars().all())
+    if not projects:
+        return []
+
+    ids = [project.id for project in projects]
+    import_rows = await db.execute(
+        select(AdminMemoryConversation.project_id, func.count())
+        .where(AdminMemoryConversation.project_id.in_(ids))
+        .group_by(AdminMemoryConversation.project_id)
+    )
+    chat_rows = await db.execute(
+        select(AiChat.project_id, func.count())
+        .where(AiChat.project_id.in_(ids), AiChat.admin_id == admin.id)
+        .group_by(AiChat.project_id)
+    )
+    import_counts = {row[0]: int(row[1]) for row in import_rows.all()}
+    chat_counts = {row[0]: int(row[1]) for row in chat_rows.all()}
+    return [
+        AiProjectOut(
+            id=project.id,
+            name=project.name,
+            description=project.description or "",
+            source_project_id=project.source_project_id or None,
+            import_count=import_counts.get(project.id, 0),
+            chat_count=chat_counts.get(project.id, 0),
+            created_at=project.created_at,
+            updated_at=project.updated_at,
+        )
+        for project in projects
+    ]
 
 
 @router.post("/projects", response_model=AiProjectOut, status_code=201)
@@ -82,13 +111,22 @@ async def create_project(
 @router.get("/history", response_model=list[HistoryItem])
 async def list_history(
     q: str = Query(default="", max_length=400),
+    project_id: str | None = None,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> list[HistoryItem]:
     cleaned = " ".join(q.split()).strip().lower()
     items: list[HistoryItem] = []
 
+    project_names: dict[str, str] = {}
+    named = await db.execute(
+        select(AiProject.id, AiProject.name).where(AiProject.admin_id == admin.id)
+    )
+    project_names = {row[0]: row[1] for row in named.all()}
+
     chat_q = select(AiChat).where(AiChat.admin_id == admin.id)
+    if project_id:
+        chat_q = chat_q.where(AiChat.project_id == project_id)
     if cleaned:
         chat_q = chat_q.where(AiChat.title.ilike(f"%{cleaned}%"))
     chat_q = chat_q.order_by(AiChat.updated_at.desc()).limit(80)
@@ -102,11 +140,15 @@ async def list_history(
                 mode=chat.mode,
                 updated_at=chat.updated_at,
                 preview="",
+                project_id=chat.project_id,
+                project_name=project_names.get(chat.project_id or "", None),
             )
         )
 
     import_q = select(AdminMemoryConversation)
     # Org-wide imported corpus (shared across admin accounts)
+    if project_id:
+        import_q = import_q.where(AdminMemoryConversation.project_id == project_id)
     if cleaned:
         import_q = import_q.where(
             or_(
@@ -128,6 +170,8 @@ async def list_history(
                 mode=None,
                 updated_at=row.conversation_updated_at or row.imported_at,
                 preview=preview[:180],
+                project_id=row.project_id,
+                project_name=project_names.get(row.project_id or "", None),
             )
         )
 
@@ -140,11 +184,26 @@ async def get_import(
     import_id: str,
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
-) -> AdminMemoryConversation:
+) -> ImportConversationOut:
     row = await db.get(AdminMemoryConversation, import_id)
     if not row:
         raise HTTPException(status_code=404, detail="Imported conversation not found")
-    return row
+    project_name = None
+    if row.project_id:
+        project = await db.get(AiProject, row.project_id)
+        if project:
+            project_name = project.name
+    return ImportConversationOut(
+        id=row.id,
+        title=row.title,
+        source_filename=row.source_filename,
+        user_text=row.user_text,
+        project_id=row.project_id,
+        project_name=project_name,
+        conversation_created_at=row.conversation_created_at,
+        conversation_updated_at=row.conversation_updated_at,
+        imported_at=row.imported_at,
+    )
 
 
 @router.post("/imports/{import_id}/continue", response_model=AiChatOut, status_code=201)
@@ -159,11 +218,13 @@ async def continue_import(
     if not row:
         raise HTTPException(status_code=404, detail="Imported conversation not found")
 
-    project_id = payload.project_id
+    project_id = payload.project_id or row.project_id
     if project_id:
         project = await db.get(AiProject, project_id)
         if not project or project.admin_id != admin.id:
             raise HTTPException(status_code=404, detail="Project not found")
+    else:
+        project = None
 
     title = f"Continue: {row.title or 'Imported chat'}".strip()[:500]
     chat = AiChat(
@@ -180,6 +241,12 @@ async def continue_import(
     if not turns and transcript:
         turns = [{"role": "user", "content": transcript}]
 
+    project_line = ""
+    if project:
+        project_line = (
+            f"ChatGPT / Space project: {project.name}\n"
+            f"{(project.description or '').strip()}\n"
+        ).strip()
     db.add(
         AiMessage(
             chat_id=chat.id,
@@ -187,7 +254,8 @@ async def continue_import(
             content=(
                 "CONTINUATION CONTEXT — imported ChatGPT conversation.\n"
                 f"Title: {row.title or 'Untitled'}\n"
-                "The following user and assistant messages are the original thread. "
+                + (project_line + "\n" if project_line else "")
+                + "The following user and assistant messages are the original thread. "
                 "Continue from where it left off. Do not restart unless asked. "
                 "Do not invent clinical protocols."
             ),

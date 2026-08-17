@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select, text
 
 from app.config import settings
-from app.database import Base, SessionLocal, engine
+from app.database import Base, SessionLocal, apply_schema_patches, engine
 from app.models import User
 from app.routers import auth, packs, program_brief, submissions, workspace
 from app.services.program_brief import seed_initial_brief
@@ -130,6 +130,7 @@ async def ensure_schema() -> None:
                 "ADD COLUMN IF NOT EXISTS image_path VARCHAR(500) DEFAULT ''"
             )
         )
+        await apply_schema_patches(conn)
         Path(settings.media_dir, "chat").mkdir(parents=True, exist_ok=True)
 
 

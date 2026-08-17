@@ -154,6 +154,9 @@ class AiProjectOut(BaseModel):
     id: str
     name: str
     description: str
+    source_project_id: str | None = None
+    import_count: int = 0
+    chat_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -251,6 +254,8 @@ class HistoryItem(BaseModel):
     mode: str | None = None
     updated_at: datetime | None = None
     preview: str = ""
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class ImportConversationOut(BaseModel):
@@ -258,6 +263,8 @@ class ImportConversationOut(BaseModel):
     title: str
     source_filename: str
     user_text: str
+    project_id: str | None = None
+    project_name: str | None = None
     conversation_created_at: datetime | None
     conversation_updated_at: datetime | None
     imported_at: datetime

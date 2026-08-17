@@ -119,6 +119,10 @@ class AdminMemoryConversation(Base):
     source_filename: Mapped[str] = mapped_column(String(500), default="")
     title: Mapped[str] = mapped_column(String(500), default="")
     user_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_project_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    project_id: Mapped[str | None] = mapped_column(
+        UUID(as_uuid=False), ForeignKey("ai_projects.id"), nullable=True, index=True
+    )
     conversation_created_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -206,6 +210,7 @@ class AiProject(Base):
     )
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    source_project_id: Mapped[str] = mapped_column(String(120), default="", index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

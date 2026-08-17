@@ -110,3 +110,9 @@ docker compose run --rm api python -m app.scripts.embed_admin_memory
 The importer stores **full threads** (your messages and GPT replies), recovers
 truncated ZIP batches when possible, and indexes them for search. Click
 **Continue** in History to open the original back-and-forth in Space.
+
+**ChatGPT Projects** are imported into **Space → Projects** (name, instructions,
+and which conversations belong together). Re-run the same import after pulling
+this update — you do not need a new ZIP. Uploaded Project files are not in
+OpenAI's export (names only). Then use **View conversations** on a project and
+**Continue** to pick up a thread in that project.

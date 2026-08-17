@@ -116,6 +116,9 @@ export type AiProject = {
   id: string;
   name: string;
   description: string;
+  source_project_id?: string | null;
+  import_count?: number;
+  chat_count?: number;
   created_at: string;
   updated_at: string;
 };
@@ -154,6 +157,8 @@ export type HistoryItem = {
   mode: string | null;
   updated_at: string | null;
   preview: string;
+  project_id?: string | null;
+  project_name?: string | null;
 };
 
 export type ImportConversation = {
@@ -161,6 +166,8 @@ export type ImportConversation = {
   title: string;
   source_filename: string;
   user_text: string;
+  project_id?: string | null;
+  project_name?: string | null;
   conversation_created_at: string | null;
   conversation_updated_at: string | null;
   imported_at: string;
@@ -319,10 +326,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
-  workspaceHistory: (q?: string) =>
-    request<HistoryItem[]>(
-      `/workspace/history${q?.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`
-    ),
+  workspaceHistory: (q?: string, projectId?: string) => {
+    const params = new URLSearchParams();
+    if (q?.trim()) params.set("q", q.trim());
+    if (projectId) params.set("project_id", projectId);
+    const qs = params.toString();
+    return request<HistoryItem[]>(`/workspace/history${qs ? `?${qs}` : ""}`);
+  },
   workspaceImport: (id: string) =>
     request<ImportConversation>(`/workspace/imports/${id}`),
   continueImport: (
