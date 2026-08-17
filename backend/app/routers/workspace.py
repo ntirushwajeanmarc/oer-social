@@ -42,6 +42,7 @@ from app.schemas import (
 )
 from app.services import openai_service
 from app.services.admin_memory import build_memory_query, retrieve_admin_memory
+from app.services.chatgpt_export import parse_transcript_turns
 from app.services.program_brief import active_grounding, get_active_brief, render_brief
 from app.services.security import require_admin
 
@@ -90,7 +91,7 @@ async def list_history(
     chat_q = select(AiChat).where(AiChat.admin_id == admin.id)
     if cleaned:
         chat_q = chat_q.where(AiChat.title.ilike(f"%{cleaned}%"))
-    chat_q = chat_q.order_by(AiChat.updated_at.desc()).limit(40)
+    chat_q = chat_q.order_by(AiChat.updated_at.desc()).limit(80)
     chats = list((await db.execute(chat_q)).scalars().all())
     for chat in chats:
         items.append(
@@ -115,7 +116,7 @@ async def list_history(
         )
     import_q = import_q.order_by(
         AdminMemoryConversation.conversation_updated_at.desc().nullslast()
-    ).limit(40)
+    ).limit(200)
     imports = list((await db.execute(import_q)).scalars().all())
     for row in imports:
         preview = (row.user_text or "").strip().replace("\n", " ")
@@ -131,7 +132,7 @@ async def list_history(
         )
 
     items.sort(key=lambda i: i.updated_at or datetime.min.replace(tzinfo=UTC), reverse=True)
-    return items[:60]
+    return items[:250]
 
 
 @router.get("/imports/{import_id}", response_model=ImportConversationOut)
@@ -175,9 +176,9 @@ async def continue_import(
     await db.flush()
 
     transcript = (row.user_text or "").strip()
-    # Keep enough prior thread for continuity without blowing the context window.
-    if len(transcript) > 14000:
-        transcript = transcript[:7000].rstrip() + "\n\n…[middle omitted]…\n\n" + transcript[-7000:].lstrip()
+    turns = parse_transcript_turns(transcript)
+    if not turns and transcript:
+        turns = [{"role": "user", "content": transcript}]
 
     db.add(
         AiMessage(
@@ -186,25 +187,34 @@ async def continue_import(
             content=(
                 "CONTINUATION CONTEXT — imported ChatGPT conversation.\n"
                 f"Title: {row.title or 'Untitled'}\n"
-                "The admin is continuing this thread on CircuitNotion / OER Social. "
-                "Treat the transcript below as prior conversation history. "
-                "Pick up themes, decisions, and unfinished work. Do not restart from scratch "
-                "unless asked. Do not invent clinical protocols.\n\n"
-                f"--- IMPORTED TRANSCRIPT ---\n{transcript}"
+                "The following user and assistant messages are the original thread. "
+                "Continue from where it left off. Do not restart unless asked. "
+                "Do not invent clinical protocols."
             ),
         )
     )
-    db.add(
-        AiMessage(
-            chat_id=chat.id,
-            role="assistant",
-            content=(
-                f"Continuing from **{row.title or 'your imported conversation'}**.\n\n"
-                "I’ve loaded that history as context on CircuitNotion. "
-                "What should we pick up next?"
-            ),
+    # Keep the visible thread complete; the model still uses a recent window.
+    for turn in turns[:400]:
+        role = turn["role"] if turn["role"] in {"user", "assistant"} else "user"
+        db.add(
+            AiMessage(
+                chat_id=chat.id,
+                role=role,
+                content=turn["content"][:12000],
+                image_path="",
+            )
         )
-    )
+    if not turns:
+        db.add(
+            AiMessage(
+                chat_id=chat.id,
+                role="assistant",
+                content=(
+                    f"Continuing from **{row.title or 'your imported conversation'}**.\n\n"
+                    "I loaded that history. What should we pick up next?"
+                ),
+            )
+        )
     chat.updated_at = datetime.now(UTC)
     await db.commit()
     return await _load_chat(db, chat.id, admin.id)
@@ -222,7 +232,7 @@ async def list_chats(
         stmt = stmt.where(AiChat.mode == mode)
     if project_id:
         stmt = stmt.where(AiChat.project_id == project_id)
-    stmt = stmt.order_by(AiChat.updated_at.desc()).limit(50)
+    stmt = stmt.order_by(AiChat.updated_at.desc()).limit(200)
     return list((await db.execute(stmt)).scalars().all())
 
 

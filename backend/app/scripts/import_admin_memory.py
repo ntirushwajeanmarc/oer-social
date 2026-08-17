@@ -14,10 +14,15 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.database import Base, SessionLocal, engine
 from app.models import AdminMemoryConversation, User
+from app.services.chatgpt_export import (
+    conversation_turns,
+    format_transcript,
+    parse_json_array_best_effort,
+)
 
 
-def recover_complete_entries(path: Path) -> Iterator[tuple[str, bytes]]:
-    """Read complete local ZIP entries even when the central directory is missing."""
+def recover_zip_entries(path: Path) -> Iterator[tuple[str, bytes, bool]]:
+    """Yield (name, payload, truncated) including a partial last ZIP entry."""
     data = path.read_bytes()
     position = 0
     while position + 30 <= len(data) and data[position : position + 4] == b"PK\x03\x04":
@@ -43,56 +48,42 @@ def recover_complete_entries(path: Path) -> Iterator[tuple[str, bytes]]:
         name = data[name_start : name_start + name_length].decode("utf-8", "replace")
         payload_start = name_start + name_length + extra_length
         payload_end = payload_start + compressed_size
-        if payload_end > len(data):
-            print(f"Skipping truncated entry: {name}")
+        truncated = payload_end > len(data)
+        compressed = data[payload_start : min(payload_end, len(data))]
+        if not compressed:
             break
 
-        compressed = data[payload_start:payload_end]
         if method == 0:
             raw = compressed
         elif method == 8:
-            raw = zlib.decompress(compressed, -15)
+            try:
+                raw = zlib.decompress(compressed, -15)
+            except zlib.error:
+                decompressor = zlib.decompressobj(-15)
+                raw = decompressor.decompress(compressed)
+                print(f"Partial inflate for truncated entry: {name} ({len(raw)} bytes)")
         else:
             print(f"Skipping unsupported compression method {method}: {name}")
             raw = b""
 
         if raw:
-            yield name, raw
+            yield name, raw, truncated
+        if truncated:
+            print(f"Truncated ZIP entry: {name} — importing complete conversations from the partial file.")
+            break
         position = payload_end
 
 
-def message_text(message: dict[str, Any]) -> str:
-    content = message.get("content") or {}
-    parts = content.get("parts") or []
-    values: list[str] = []
-    for part in parts:
-        if isinstance(part, str):
-            value = part.strip()
-            if value:
-                values.append(value)
-    return "\n".join(values)
-
-
-def user_transcript(conversation: dict[str, Any]) -> str:
-    messages: list[tuple[float, str]] = []
-    for node in (conversation.get("mapping") or {}).values():
-        message = node.get("message") or {}
-        if (message.get("author") or {}).get("role") != "user":
-            continue
-        metadata = message.get("metadata") or {}
-        if metadata.get("is_visually_hidden_from_conversation"):
-            continue
-        text = message_text(message)
-        if not text:
-            continue
-        created = message.get("create_time")
-        try:
-            timestamp = float(created or 0)
-        except (TypeError, ValueError):
-            timestamp = 0
-        messages.append((timestamp, text))
-    messages.sort(key=lambda item: item[0])
-    return "\n\n".join(text for _, text in messages)[:200_000]
+def load_conversations(raw: bytes, truncated: bool) -> list[dict[str, Any]]:
+    if truncated:
+        items = parse_json_array_best_effort(raw)
+        print(f"Recovered {len(items)} complete conversations from truncated JSON")
+        return items
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return parse_json_array_best_effort(raw)
+    return data if isinstance(data, list) else []
 
 
 def to_datetime(value: Any) -> datetime | None:
@@ -120,18 +111,19 @@ async def import_archive(path: Path, admin_email: str) -> None:
         skipped_empty = 0
         source = path.name
 
-        for entry_name, raw in recover_complete_entries(path):
+        for entry_name, raw, truncated in recover_zip_entries(path):
             if not entry_name.startswith("conversations-") or not entry_name.endswith(
                 ".json"
             ):
                 continue
-            conversations = json.loads(raw)
+            conversations = load_conversations(raw, truncated)
             print(f"Reading {entry_name}: {len(conversations)} conversations")
             for conversation in conversations:
                 if conversation.get("is_do_not_remember"):
                     skipped_private += 1
                     continue
-                transcript = user_transcript(conversation)
+                turns = conversation_turns(conversation)
+                transcript = format_transcript(turns)
                 if not transcript:
                     skipped_empty += 1
                     continue
@@ -182,11 +174,10 @@ async def import_archive(path: Path, admin_email: str) -> None:
 
         await db.commit()
         print(
-            f"Imported/updated {imported} conversations for {admin_email}; "
+            f"Imported/updated {imported} full conversations for {admin_email}; "
             f"skipped private={skipped_private}, empty={skipped_empty}."
         )
 
-    # Index embeddings after import (CircuitNotion text-embedding-3-small → pgvector)
     try:
         from app.services.memory_index import backfill_memory_embeddings
 
@@ -198,7 +189,7 @@ async def import_archive(path: Path, admin_email: str) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Import recoverable ChatGPT export conversations as admin memory."
+        description="Import ChatGPT export conversations (full user + assistant turns) as admin memory."
     )
     parser.add_argument("archive", type=Path)
     parser.add_argument("--admin-email", required=True)

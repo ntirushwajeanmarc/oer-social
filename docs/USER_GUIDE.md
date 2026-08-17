@@ -107,9 +107,6 @@ docker compose run --rm api python -m app.scripts.embed_admin_memory
 
 5. In the app: **Space → History** — search imports and use **Continue** to start a live chat.
 
-The importer is idempotent and supports recovering complete conversation batches
-from a truncated ZIP. It stores only the admin's messages, excludes conversations
-marked “do not remember,” and does not copy old assistant answers. When an admin
-generates a pack, the agent retrieves relevant prior work plus preference/style
-conversations and uses them for continuity. Current clinical grounding and safety
-rules always take priority.
+The importer stores **full threads** (your messages and GPT replies), recovers
+truncated ZIP batches when possible, and indexes them for search. Click
+**Continue** in History to open the original back-and-forth in Space.
