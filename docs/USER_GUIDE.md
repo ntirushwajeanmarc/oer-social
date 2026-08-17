@@ -31,7 +31,7 @@ PUBLIC_BASE_URL=https://oer.yourdomain.com
 ## Admin
 
 1. Set admin email/password in `backend/.env` (not in the UI).
-2. Set `CIRCUITNOTION_API_KEY` and `OPENAI_BASE_URL=https://api.circuitnotion.com/v1` ([API docs](https://circuitnotion.com/Api_Documentation)). Text: `circuit-2-turbo`. Images: `OPENAI_IMAGE_MODEL=gpt-image-2` (`OPENAI_IMAGE_QUALITY=medium`). Never send `response_format`.
+2. Set `CIRCUITNOTION_API_KEY` and `OPENAI_BASE_URL=https://api.circuitnotion.com/v1` ([API docs](https://circuitnotion.com/Api_Documentation)). Text: `circuit-2-turbo`. Images: `OPENAI_IMAGE_MODEL=gpt-image-2` and `OPENAI_IMAGE_QUALITY=low` (medium/high cost much more). Do not use `dall-e-2` — CircuitNotion routes it to gpt-image-2 at expensive default quality. Never send `response_format`.
 3. Log in → **Admin** → **Generate pack** (poster image via CircuitNotion + caption + elaboration + case + questions).
 4. **Publish to feed** so learners see it.
 5. **Post to IG & X** — posts live when API keys are set; otherwise returns ready-to-export status with the reason.

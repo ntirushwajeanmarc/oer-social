@@ -18,7 +18,8 @@ class Settings(BaseSettings):
     # CircuitNotion: dall-e-3 currently fails upstream (proxy injects response_format).
     # Use gpt-image-2; never send response_format from this app.
     openai_image_model: str = "gpt-image-2"
-    openai_image_quality: str = "medium"  # low | medium | high
+    openai_image_quality: str = "low"  # low | medium | high — high is ~30x low on gpt-image-2
+    openai_image_size: str = "1024x1024"
     # CircuitNotion OpenAI-compatible embeddings
     openai_embedding_model: str = "text-embedding-3-small"
     openai_embedding_dims: int = 1536

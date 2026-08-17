@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -12,6 +13,65 @@ from openai import AsyncOpenAI
 
 from app.config import settings
 from app.services.grounding import SYSTEM_BASE, load_grounding
+
+logger = logging.getLogger("oer.openai")
+
+# CircuitNotion bills the *routed* model. dall-e-2 is not a cheap image
+# route there — aliases often land on gpt-image-2 at default (high) quality.
+_CHEAP_IMAGE_ALIASES = {
+    "dall-e-2",
+    "dalle-2",
+    "dalle2",
+    "dall-e-3",
+    "dalle-3",
+    "dalle3",
+}
+
+
+def _image_request_body(prompt: str) -> dict:
+    requested = (settings.openai_image_model or "").strip()
+    if not requested:
+        raise RuntimeError(
+            "OPENAI_IMAGE_MODEL is empty. Set it to gpt-image-2 and OPENAI_IMAGE_QUALITY=low."
+        )
+
+    model = requested
+    quality = (settings.openai_image_quality or "low").strip().lower()
+    if quality not in {"low", "medium", "high"}:
+        quality = "low"
+
+    if requested.lower() in _CHEAP_IMAGE_ALIASES:
+        model = "gpt-image-2"
+        quality = "low"
+        logger.warning(
+            "OPENAI_IMAGE_MODEL=%s is not a cheap CircuitNotion image route; "
+            "using gpt-image-2 quality=low instead",
+            requested,
+        )
+
+    size = (settings.openai_image_size or "1024x1024").strip()
+    if size not in {"1024x1024", "1024x1536", "1536x1024"}:
+        size = "1024x1024"
+
+    body: dict = {
+        "model": model,
+        "prompt": prompt[:3900],
+        "size": size,
+        "n": 1,
+    }
+    if model.startswith("gpt-image"):
+        body["quality"] = quality
+        body["output_format"] = "png"
+
+    logger.info(
+        "Image generation request model=%s quality=%s size=%s (configured %s/%s)",
+        model,
+        body.get("quality", "-"),
+        size,
+        requested,
+        settings.openai_image_quality,
+    )
+    return body
 
 
 def get_client() -> AsyncOpenAI:
@@ -100,7 +160,7 @@ async def generate_image(
     model = (settings.openai_image_model or "").strip()
     if not model:
         raise RuntimeError(
-            "OPENAI_IMAGE_MODEL is empty. Set it to gpt-image-2 for CircuitNotion."
+            "OPENAI_IMAGE_MODEL is empty. Set it to gpt-image-2 with OPENAI_IMAGE_QUALITY=low."
         )
 
     media_root = Path(settings.media_dir)
@@ -126,16 +186,7 @@ async def generate_image(
     dest = out_dir / filename
 
     # Raw HTTP so the OpenAI SDK cannot inject response_format (rejected upstream).
-    body: dict = {
-        "model": model,
-        "prompt": full_prompt[:3900],
-        "size": "1024x1024",
-    }
-    if model.startswith("gpt-image"):
-        quality = (settings.openai_image_quality or "medium").strip().lower()
-        if quality in {"low", "medium", "high"}:
-            body["quality"] = quality
-        body["output_format"] = "png"
+    body = _image_request_body(full_prompt)
 
     url = f"{settings.openai_base_url.rstrip('/')}/images/generations"
     async with httpx.AsyncClient(timeout=180.0) as http:
